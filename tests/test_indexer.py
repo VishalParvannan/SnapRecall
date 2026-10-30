@@ -308,3 +308,23 @@ def test_all_images_lists_each_image_once(env):
     assert sorted(r.name for r in storage.all_images()) == ["inner.png", "top.png"]
     forget_folder(str(shots), storage, config)
     assert [r.name for r in storage.all_images()] == ["inner.png"]
+
+
+def test_removed_screenshots_stay_removed_and_files_survive(env):
+    shots, config, storage = env
+    a = make_image(shots / "a.png")
+    make_image(shots / "b.png")
+    index_folder(shots, storage, config)
+    thumb = storage.get(str(a)).thumbnail
+
+    assert indexer.remove_screenshots([str(a)], storage, config) == 1
+
+    assert a.exists()                       # original untouched
+    assert not Path(thumb).exists()
+    assert names(storage.folder_images(str(shots))) == {"b.png"}
+    index_folder(shots, storage, config)    # re-index doesn't bring it back
+    assert names(storage.folder_images(str(shots))) == {"b.png"}
+
+    assert storage.restore_removed() == 1
+    index_folder(shots, storage, config)
+    assert names(storage.folder_images(str(shots))) == {"a.png", "b.png"}

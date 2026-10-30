@@ -38,6 +38,12 @@ _CSS = """<style>
     [class*="st-key-card_"] img { aspect-ratio: 16 / 10; object-fit: cover; object-position: top;
         border-radius: 8px; background: #232838; }
     [class*="st-key-card_"] button { padding: 0; min-height: 0; max-width: 100%; }
+    /* Clicking anywhere on a card (thumbnail included) presses its filename button: the button's
+       invisible ::after is stretched over the card. Pure CSS, so nothing extra reruns. */
+    [class*="st-key-card_"] { position: relative; cursor: pointer; }
+    [class*="st-key-card_"] div:has(button), [class*="st-key-card_"] button { position: static; }
+    [class*="st-key-card_"] button::after { content: ""; position: absolute; inset: 0; z-index: 1; }
+    [class*="st-key-card_"] [data-testid="stElementToolbar"] { display: none; }
     [class*="st-key-card_"] button p { font-weight: 600; overflow: hidden; text-overflow: ellipsis;
         white-space: nowrap; }
     .st-key-when [data-baseweb="select"] > div { min-height: 3.4rem; border-radius: 14px; background: #1b1f2b;

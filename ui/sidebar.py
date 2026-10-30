@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-from indexer import forget_folder
+from indexer import forget_folder, remove_screenshots
 from ui.account import account_panel
 from ui.context import ALL_FOLDERS, AppContext
 from ui.folders import choose_folder, switch_folder
@@ -54,6 +54,23 @@ def render_sidebar(ctx: AppContext) -> None:
             st.caption("Set SNAPRECALL_HOME to change it.")
             st.caption(f"Text recognition: {'on' if ctx.ocr else 'off'} · "
                        f"Visual search: {'on' if ctx.embedder else 'off'}")
+            scope = "this folder" if info else "all folders"
+            with st.popover("Delete all screenshots", width="stretch"):
+                st.markdown(f"**Delete every screenshot in {scope} from SnapRecall?** They disappear "
+                            "from your library and search. The image files stay on your computer, "
+                            "and re-indexing won't bring them back. Backed-up copies in your account "
+                            "aren't affected.")
+                if st.button("Delete all screenshots", key="del_all", type="primary"):
+                    shots = ctx.storage.folder_images(info.path) if info else ctx.storage.all_images()
+                    remove_screenshots([r.path for r in shots], ctx.storage, ctx.config)
+                    state.selected = None
+                    st.rerun()
+            removed_count = len(ctx.storage.removed_paths())
+            if removed_count and st.button(f"Restore {removed_count} deleted screenshots",
+                                           width="stretch",
+                                           help="They return the next time you re-index their folder."):
+                ctx.storage.restore_removed()
+                st.rerun()
             if info and st.button("Remove folder from index", width="stretch"):
                 forget_folder(info.path, ctx.storage, ctx.config)
                 switch_folder(ctx, None)

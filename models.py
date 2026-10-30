@@ -9,6 +9,8 @@ work without them installed.
 """
 from __future__ import annotations
 
+import logging
+import warnings
 from typing import Protocol
 
 import numpy as np
@@ -51,7 +53,12 @@ class EasyOcrEngine:
                 "`pip install -r requirements-models.txt`."
             ) from exc
         try:
-            self._reader = easyocr.Reader(list(languages), gpu=gpu, verbose=False)
+            # EasyOCR quantizes its CPU model with a deprecated torch API; the
+            # resulting warning is harmless noise.
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message=".*quantiz.*", category=UserWarning)
+                warnings.filterwarnings("ignore", category=DeprecationWarning)
+                self._reader = easyocr.Reader(list(languages), gpu=gpu, verbose=False)
         except Exception as exc:  # download or weight-loading problems
             raise ModelLoadError(
                 f"Could not load the text recognition model ({exc.__class__.__name__}). "
@@ -76,10 +83,14 @@ class OpenClipEmbedder:
             ) from exc
         self._torch = torch
         self._device = "cuda" if torch.cuda.is_available() else "cpu"
+        # Public weights need no Hugging Face token; silence the reminder.
+        logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
         try:
-            model, _, preprocess = open_clip.create_model_and_transforms(
-                model_name, pretrained=pretrained, device=self._device
-            )
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message=".*unauthenticated requests.*")
+                model, _, preprocess = open_clip.create_model_and_transforms(
+                    model_name, pretrained=pretrained, device=self._device
+                )
         except Exception as exc:
             raise ModelLoadError(
                 f"Could not load the visual search model ({exc.__class__.__name__}). "

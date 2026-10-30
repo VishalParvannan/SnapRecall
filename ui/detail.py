@@ -9,6 +9,7 @@ import streamlit.components.v1 as components
 from PIL import Image
 
 from copy_image import CopyImageError, clipboard_png, copy_button_html
+from indexer import remove_screenshots
 from search import similar
 from storage import ImageRecord
 from ui.components import empty_state, render_grid
@@ -55,6 +56,14 @@ def show_detail(ctx: AppContext, rec: ImageRecord, visible: list[ImageRecord]) -
                 open_original(rec.path)
             except OSError as exc:
                 st.error(f"Could not open the file: {exc}")
+        with st.popover("Delete screenshot", width="stretch"):
+            st.markdown("**Delete this screenshot from SnapRecall?** It disappears from your library "
+                        "and search. The image file stays on your computer, and re-indexing won't "
+                        "bring it back.")
+            if st.button("Delete screenshot", key="del_one", type="primary"):
+                remove_screenshots([rec.path], ctx.storage, ctx.config)
+                state.selected = None
+                st.rerun()
         st.caption("Copy image puts the full-size picture on your clipboard. "
                    "Open original opens it in your default image viewer.")
         if rec.ocr_text:

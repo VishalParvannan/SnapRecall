@@ -50,6 +50,10 @@ CREATE TABLE IF NOT EXISTS folder_images (
     image   TEXT NOT NULL REFERENCES images(path) ON DELETE CASCADE,
     PRIMARY KEY (folder, image)
 );
+CREATE TABLE IF NOT EXISTS removed_images (   -- screenshots the user removed; skipped by later scans
+    path        TEXT PRIMARY KEY,
+    removed_at  TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 CREATE INDEX IF NOT EXISTS idx_folder_images_image ON folder_images(image);
 """
 
@@ -147,6 +151,28 @@ class Storage:
                 for row in conn.execute(f"SELECT * FROM images WHERE path IN ({marks})", chunk):
                     found[row["path"]] = _to_record(row)
         return found
+
+    def remove_images(self, paths: list[str]) -> list[ImageRecord]:
+        """Remove images from the library and remember them so re-indexing doesn't bring them back.
+
+        Only index data is deleted; the files on disk are never touched. Returns the removed
+        records so the caller can clean up their thumbnails.
+        """
+        removed = list(self.get_many(paths).values())
+        with self._connect() as conn:
+            conn.executemany("INSERT OR IGNORE INTO removed_images (path) VALUES (?)",
+                             [(p,) for p in paths])
+            conn.executemany("DELETE FROM images WHERE path = ?", [(p,) for p in paths])
+        return removed
+
+    def removed_paths(self) -> set[str]:
+        with self._connect() as conn:
+            return {r["path"] for r in conn.execute("SELECT path FROM removed_images")}
+
+    def restore_removed(self) -> int:
+        """Forget all removals, so the next re-index adds those screenshots again."""
+        with self._connect() as conn:
+            return conn.execute("DELETE FROM removed_images").rowcount
 
     # ---- folders and membership ------------------------------------------
     def save_folder(self, folder: str, complete: bool | None = None) -> None:

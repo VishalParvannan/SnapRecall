@@ -84,6 +84,8 @@ def plan_scan(folder: Path, storage: Storage, ocr: OcrEngine | None = None,
               embedder: Embedder | None = None) -> ScanPlan:
     """Compare files on disk with the index using (size, mtime) fingerprints."""
     paths, errors = discover_images(folder)
+    removed = storage.removed_paths()  # screenshots the user removed from the library
+    paths = [p for p in paths if str(p) not in removed]
     plan = ScanPlan(errors=errors)
     plan.previous = storage.get_many([str(p) for p in paths])
     seen: set[str] = set()
@@ -218,3 +220,11 @@ def forget_folder(folder: str, storage: Storage, config: Config) -> None:
     """Remove a folder from the index (screenshots on disk are untouched)."""
     for orphan in storage.remove_folder(folder):
         remove_thumbnail(config, orphan.thumbnail)
+
+
+def remove_screenshots(paths: list[str], storage: Storage, config: Config) -> int:
+    """Remove screenshots from the library (screenshots on disk are untouched)."""
+    removed = storage.remove_images(paths)
+    for rec in removed:
+        remove_thumbnail(config, rec.thumbnail)
+    return len(removed)
