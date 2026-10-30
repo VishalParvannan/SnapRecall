@@ -173,3 +173,18 @@ def test_excerpt_trims_long_text_with_ellipses():
     joined = "".join(s for s, _ in segs)
     assert joined.startswith("…") and joined.endswith("…") and len(joined) < 80
     assert ("invoice", True) in segs
+
+
+def test_sort_records_orders_like_a_file_explorer():
+    from search import sort_records
+
+    a = ImageRecord(path="/s/img10.png", size=5, mtime_ns=3)
+    b = ImageRecord(path="/s/IMG2.jpg", size=9, mtime_ns=1)
+    c = ImageRecord(path="/s/img1.png", size=1, mtime_ns=2)
+    names = lambda rs: [r.name for r in rs]
+    assert names(sort_records([a, b, c], "Name (A–Z)")) == ["img1.png", "IMG2.jpg", "img10.png"]
+    assert names(sort_records([a, b, c], "Name (Z–A)")) == ["img10.png", "IMG2.jpg", "img1.png"]
+    assert names(sort_records([a, b, c], "Date modified (newest)")) == ["img10.png", "img1.png", "IMG2.jpg"]
+    assert names(sort_records([a, b, c], "Size (smallest)")) == ["img1.png", "img10.png", "IMG2.jpg"]
+    assert names(sort_records([a, b, c], "Type")) == ["IMG2.jpg", "img1.png", "img10.png"]
+    assert sort_records([a, b, c], "Best match") == [a, b, c]

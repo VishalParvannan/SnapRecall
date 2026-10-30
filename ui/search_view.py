@@ -6,7 +6,7 @@ from datetime import date, timedelta
 
 import streamlit as st
 
-from search import filter_by_date, query_terms, search
+from search import BEST_MATCH, SORT_OPTIONS, filter_by_date, query_terms, search, sort_records
 from storage import ImageRecord
 from ui.components import empty_state, render_grid
 from ui.context import AppContext
@@ -15,13 +15,18 @@ DATE_RANGES = ["Any time", "Today", "Past 7 days", "Past 30 days", "This year", 
 
 
 def render_search(ctx: AppContext, visible: list[ImageRecord]) -> None:
-    col_query, col_when = st.columns([4, 1.2], vertical_alignment="center")
+    col_query, col_when, col_sort = st.columns([4, 1.2, 1.4], vertical_alignment="center")
     with col_query:
         query = st.text_input("Search", placeholder="🔎  Describe what you remember…",
                               label_visibility="collapsed", key="search")
     with col_when:
         when = st.selectbox("When", DATE_RANGES, label_visibility="collapsed", key="when",
                             help="Filter by the date each screenshot file was last modified.")
+    with col_sort:
+        # "Best match" only applies to a search; when browsing it falls back to newest first.
+        order = st.selectbox("Sort by", SORT_OPTIONS, label_visibility="collapsed", key="sort",
+                             help="Order results like a file explorer. Best match ranks by relevance "
+                                  "when searching.")
 
     today = date.today()
     start_day = end_day = None
@@ -61,7 +66,7 @@ def render_search(ctx: AppContext, visible: list[ImageRecord]) -> None:
         if not response.results:
             empty_state("🤔", "No matching screenshots", "Try different or fewer words, or a wider date range.")
             st.stop()
-        shown = [r.record for r in response.results]
+        shown = sort_records([r.record for r in response.results], order)
         count = f"{len(shown)} result{'s' if len(shown) != 1 else ''}{range_note}"
         if response.weak:
             st.info("No strong matches. These are the closest screenshots, but they may not be what "
@@ -69,6 +74,7 @@ def render_search(ctx: AppContext, visible: list[ImageRecord]) -> None:
         st.markdown(f'<p class="sr-muted">{html.escape(count)}</p>', unsafe_allow_html=True)
         render_grid(shown, terms=query_terms(query))
     else:
-        st.markdown(f'<p class="sr-muted">Newest screenshots{html.escape(range_note)}</p>',
-                    unsafe_allow_html=True)
-        render_grid(pool[:60])
+        browse_order = "Date modified (newest)" if order == BEST_MATCH else order
+        label = "Newest screenshots" if browse_order == "Date modified (newest)" else f"Sorted by {browse_order}"
+        st.markdown(f'<p class="sr-muted">{html.escape(label + range_note)}</p>', unsafe_allow_html=True)
+        render_grid(sort_records(pool, browse_order)[:60])

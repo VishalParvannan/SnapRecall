@@ -192,6 +192,39 @@ def filter_by_date(records: list[ImageRecord], start: date | None = None,
     return [r for r in records if (start is None or day(r) >= start) and (end is None or day(r) <= end)]
 
 
+BEST_MATCH = "Best match"
+SORT_OPTIONS = [BEST_MATCH, "Date modified (newest)", "Date modified (oldest)", "Name (A–Z)", "Name (Z–A)",
+                "Size (largest)", "Size (smallest)", "Type"]
+
+
+def _natural_key(name: str) -> list:
+    """Sort names like a file explorer: case-insensitive, with digit runs compared as numbers (2 < 10)."""
+    return [(0, int(part), "") if part.isdigit() else (1, 0, part)
+            for part in re.split(r"(\d+)", name.casefold()) if part]
+
+
+def sort_records(records: list[ImageRecord], order: str) -> list[ImageRecord]:
+    """Return `records` in the chosen order. "Best match" keeps the given (relevance) order.
+
+    Ties are broken by name so the grid order is stable between reruns."""
+    by_name = sorted(records, key=lambda r: _natural_key(r.name))
+    if order == "Date modified (newest)":
+        return sorted(by_name, key=lambda r: r.mtime_ns, reverse=True)
+    if order == "Date modified (oldest)":
+        return sorted(by_name, key=lambda r: r.mtime_ns)
+    if order == "Name (A–Z)":
+        return by_name
+    if order == "Name (Z–A)":
+        return by_name[::-1]
+    if order == "Size (largest)":
+        return sorted(by_name, key=lambda r: r.size, reverse=True)
+    if order == "Size (smallest)":
+        return sorted(by_name, key=lambda r: r.size)
+    if order == "Type":
+        return sorted(by_name, key=lambda r: Path(r.path).suffix.casefold())
+    return list(records)
+
+
 @dataclass
 class SimilarResult:
     record: ImageRecord
