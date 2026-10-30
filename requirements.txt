@@ -1,0 +1,7 @@
+streamlit>=1.40
+Pillow>=10.4
+numpy>=1.26
+httpx>=0.27        # optional account sync (client)
+pytest>=8.0
+# Text recognition + visual search: see requirements-models.txt
+# Self-hosted sync server:           see requirements-server.txt

@@ -1,0 +1,16 @@
+[theme]
+base = "dark"
+primaryColor = "#8b5cf6"
+backgroundColor = "#0f1117"
+secondaryBackgroundColor = "#171a23"
+textColor = "#e8eaf2"
+borderColor = "#2a2f3d"
+baseRadius = "0.6rem"
+showSidebarBorder = true
+
+[client]
+toolbarMode = "minimal"
+
+[browser]
+# Keep the app fully local: no usage statistics are sent to Streamlit.
+gatherUsageStats = false

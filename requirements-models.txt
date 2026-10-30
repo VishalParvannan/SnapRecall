@@ -1,0 +1,5 @@
+# Models for text recognition and visual search (CPU is fine; GPU optional).
+# PyTorch CPU wheels: pip install torch --index-url https://download.pytorch.org/whl/cpu
+torch>=2.5
+easyocr>=1.7.2
+open_clip_torch>=2.32

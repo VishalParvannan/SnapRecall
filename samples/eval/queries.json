@@ -1,0 +1,138 @@
+[
+  {
+    "query": "database connection refused",
+    "kind": "exact",
+    "relevant": [
+      "shot_015.png"
+    ]
+  },
+  {
+    "query": "Invoice total due",
+    "kind": "exact",
+    "relevant": [
+      "shot_005.png"
+    ]
+  },
+  {
+    "query": "boarding pass gate B12",
+    "kind": "exact",
+    "relevant": [
+      "shot_048.png"
+    ]
+  },
+  {
+    "query": "npm ERR could not read package.json",
+    "kind": "exact",
+    "relevant": [
+      "shot_057.png"
+    ]
+  },
+  {
+    "query": "KeyError user_id",
+    "kind": "exact",
+    "relevant": [
+      "shot_043.png"
+    ]
+  },
+  {
+    "query": "Käsespätzle",
+    "kind": "exact",
+    "relevant": [
+      "shot_020.png"
+    ]
+  },
+  {
+    "query": "the pasta recipe with tomatoes",
+    "kind": "approximate",
+    "relevant": [
+      "shot_012.png"
+    ]
+  },
+  {
+    "query": "blue sneakers I wanted to buy",
+    "kind": "approximate",
+    "relevant": [
+      "shot_004.png"
+    ]
+  },
+  {
+    "query": "forgot my password email",
+    "kind": "approximate",
+    "relevant": [
+      "shot_029.png"
+    ]
+  },
+  {
+    "query": "merge conflict git",
+    "kind": "approximate",
+    "relevant": [
+      "shot_054.png"
+    ]
+  },
+  {
+    "query": "money I sent to Alex",
+    "kind": "approximate",
+    "relevant": [
+      "shot_017.png"
+    ]
+  },
+  {
+    "query": "when is my package arriving",
+    "kind": "approximate",
+    "relevant": [
+      "shot_034.png"
+    ]
+  },
+  {
+    "query": "a dark screen with a red button",
+    "kind": "visual",
+    "relevant": [
+      "shot_049.png"
+    ]
+  },
+  {
+    "query": "blue circle on a yellow background",
+    "kind": "visual",
+    "relevant": [
+      "shot_028.png"
+    ]
+  },
+  {
+    "query": "night sky with stars and moon",
+    "kind": "visual",
+    "relevant": [
+      "shot_055.png"
+    ]
+  },
+  {
+    "query": "sunset over the ground",
+    "kind": "visual",
+    "relevant": [
+      "shot_051.png"
+    ]
+  },
+  {
+    "query": "red stop sign",
+    "kind": "visual",
+    "relevant": [
+      "shot_025.png"
+    ]
+  },
+  {
+    "query": "black and white checkerboard pattern",
+    "kind": "visual",
+    "relevant": [
+      "shot_045.png"
+    ]
+  },
+  {
+    "query": "giraffe passport renewal",
+    "kind": "none",
+    "relevant": []
+  },
+  {
+    "query": "violin concert seating chart",
+    "kind": "none",
+    "relevant": []
+  }
+]

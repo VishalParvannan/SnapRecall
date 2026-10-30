@@ -1,0 +1,4 @@
+# Optional SnapRecall sync server (accounts + backup). Not needed for local use.
+fastapi>=0.115
+uvicorn>=0.30
+Pillow>=10.4
