@@ -4,7 +4,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import streamlit as st
-import streamlit.components.v1 as components
 
 LOGO_PATH = str(Path(__file__).resolve().parent.parent / "assets" / "logo.svg")
 
@@ -38,10 +37,6 @@ _CSS = """<style>
     [class*="st-key-card_"]:hover { box-shadow: 0 8px 24px rgba(0,0,0,.5); transform: translateY(-2px); }
     [class*="st-key-card_"] img { aspect-ratio: 16 / 10; object-fit: cover; object-position: top;
         border-radius: 8px; background: #232838; }
-    /* Clicking the thumbnail opens the detail view (see _CARD_CLICK_JS); the tiny built-in
-       image fullscreen control is hidden. */
-    [class*="st-key-card_"] img, [class*="st-key-card_"] .sr-noimg { cursor: pointer; }
-    [class*="st-key-card_"] [data-testid="stElementToolbar"] { display: none; }
     [class*="st-key-card_"] button { padding: 0; min-height: 0; max-width: 100%; }
     [class*="st-key-card_"] button p { font-weight: 600; overflow: hidden; text-overflow: ellipsis;
         white-space: nowrap; }
@@ -72,23 +67,7 @@ _CSS = """<style>
     section[data-testid="stSidebar"] h4 { margin-bottom: 0.2rem; }
     </style>"""
 
-# Streamlit can't make an image clickable, so one delegated listener on the page forwards a click
-# on a card's thumbnail to that card's filename button.
-_CARD_CLICK_JS = """<script>
-const doc = window.parent.document;
-if (!doc.__srCardClick) {
-  doc.__srCardClick = true;
-  doc.addEventListener("click", (e) => {
-    const thumb = e.target.closest('[class*="st-key-card_"] img, [class*="st-key-card_"] .sr-noimg');
-    if (!thumb) return;
-    const button = thumb.closest('[class*="st-key-card_"]').querySelector("button");
-    if (button) button.click();
-  });
-}
-</script>"""
-
 
 def apply_branding() -> None:
     st.logo(LOGO_PATH, icon_image=LOGO_PATH, size="large")
     st.markdown(_CSS, unsafe_allow_html=True)
-    components.html(_CARD_CLICK_JS, height=0)
