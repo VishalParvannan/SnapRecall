@@ -165,6 +165,20 @@ class Storage:
             conn.executemany("DELETE FROM images WHERE path = ?", [(p,) for p in paths])
         return removed
 
+    def rename_image(self, old: str, new: str, thumbnail: str | None) -> None:
+        """Move an image's index data and folder memberships to a new path in one transaction."""
+        rec = self.get(old)
+        if rec is None:
+            raise KeyError(old)
+        rec.path, rec.thumbnail = new, thumbnail
+        values = _to_row(rec)
+        with self._connect() as conn:
+            conn.execute(f"INSERT INTO images ({', '.join(_COLUMNS)}) VALUES ({', '.join('?' for _ in _COLUMNS)})",
+                         [values[c] for c in _COLUMNS])
+            conn.execute("UPDATE folder_images SET image = ? WHERE image = ?", (new, old))
+            conn.execute("DELETE FROM images WHERE path = ?", (old,))
+            conn.execute("DELETE FROM removed_images WHERE path = ?", (new,))
+
     def removed_paths(self) -> set[str]:
         with self._connect() as conn:
             return {r["path"] for r in conn.execute("SELECT path FROM removed_images")}

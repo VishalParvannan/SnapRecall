@@ -328,3 +328,60 @@ def test_removed_screenshots_stay_removed_and_files_survive(env):
     assert storage.restore_removed() == 1
     index_folder(shots, storage, config)
     assert names(storage.folder_images(str(shots))) == {"a.png", "b.png"}
+
+
+def test_rename_moves_file_and_index_without_reprocessing(env):
+    shots, config, storage = env
+    a = make_image(shots / "a.png")
+    index_folder(shots, storage, config)
+    before = storage.get(str(a))
+
+    new_path = indexer.rename_screenshot(str(a), "  receipt  ", storage, config)
+
+    assert new_path == str(shots / "receipt.png")
+    assert not a.exists() and Path(new_path).exists()
+    assert storage.get(str(a)) is None
+    after = storage.get(new_path)
+    assert after.mtime_ns == before.mtime_ns and Path(after.thumbnail).exists()
+    assert names(storage.folder_images(str(shots))) == {"receipt.png"}
+    assert index_folder(shots, storage, config).processed == 0
+
+
+def test_rename_refuses_bad_names_and_existing_files(env):
+    shots, config, storage = env
+    a = make_image(shots / "a.png")
+    make_image(shots / "b.png")
+    index_folder(shots, storage, config)
+
+    for bad in ["", "   ", "x/y", "what?", "trailing."]:
+        with pytest.raises(indexer.RenameError):
+            indexer.rename_screenshot(str(a), bad, storage, config)
+    with pytest.raises(indexer.RenameError, match="already exists"):
+        indexer.rename_screenshot(str(a), "b", storage, config)
+    assert a.exists() and (shots / "b.png").exists()
+    assert names(storage.folder_images(str(shots))) == {"a.png", "b.png"}
+
+
+def test_rename_keeps_extension_and_overlapping_folders(env):
+    shots, config, storage = env
+    a = make_image(shots / "sub" / "a.png")
+    index_folder(shots, storage, config)
+    index_folder(shots / "sub", storage, config)
+
+    new_path = indexer.rename_screenshot(str(a), "renamed.png", storage, config)
+
+    assert Path(new_path).name == "renamed.png"
+    assert names(storage.folder_images(str(shots))) == {"renamed.png"}
+    assert names(storage.folder_images(str(shots / "sub"))) == {"renamed.png"}
+
+
+def test_failed_index_update_restores_original_name(env, monkeypatch):
+    shots, config, storage = env
+    a = make_image(shots / "a.png")
+    index_folder(shots, storage, config)
+    monkeypatch.setattr(storage, "rename_image", lambda *args: (_ for _ in ()).throw(RuntimeError("db")))
+
+    with pytest.raises(indexer.RenameError):
+        indexer.rename_screenshot(str(a), "b", storage, config)
+    assert a.exists() and not (shots / "b.png").exists()
+    assert Path(storage.get(str(a)).thumbnail).exists()

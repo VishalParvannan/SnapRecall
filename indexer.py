@@ -1,6 +1,8 @@
 """Folder discovery, change detection, and per-image processing.
 
-Original screenshots are only ever opened for reading.
+Original screenshots are only ever opened for reading. The one exception is
+`rename_screenshot`, which renames a file when the user asks; its contents are
+never changed.
 
 A scan is "complete" only if every directory and file could be read. Records
 for files that seem to be missing are removed only after a complete scan,
@@ -220,6 +222,59 @@ def forget_folder(folder: str, storage: Storage, config: Config) -> None:
     """Remove a folder from the index (screenshots on disk are untouched)."""
     for orphan in storage.remove_folder(folder):
         remove_thumbnail(config, orphan.thumbnail)
+
+
+class RenameError(Exception):
+    """A screenshot couldn't be renamed; the message is safe to show to users."""
+
+
+_INVALID_NAME_CHARS = set('<>:"/\\|?*')
+
+
+def rename_screenshot(path: str, new_stem: str, storage: Storage, config: Config) -> str:
+    """Rename a screenshot file on disk (keeping its extension) and update the index.
+
+    Never overwrites another file, and puts the original name back if the index can't be updated.
+    Returns the new path.
+    """
+    old = Path(path)
+    stem = new_stem.strip()
+    if stem.lower().endswith(old.suffix.lower()):
+        stem = stem[:-len(old.suffix)].rstrip()
+    if not stem or stem in {".", ".."}:
+        raise RenameError("Enter a name.")
+    if any(c in _INVALID_NAME_CHARS or ord(c) < 32 for c in stem) or stem.endswith("."):
+        raise RenameError('Names can\'t contain < > : " / \\ | ? * or end with a period.')
+    new = old.with_name(stem + old.suffix)
+    if new == old:
+        return path
+    if not old.exists():
+        raise RenameError("The original file is missing. It may have been moved or deleted.")
+    # On Windows a case-only change ("shot" -> "Shot") points at the same file, which is fine.
+    if new.exists() and not os.path.samefile(new, old):
+        raise RenameError(f"A file named {new.name} already exists in this folder.")
+    try:
+        old.rename(new)
+    except OSError as exc:
+        raise RenameError(f"Could not rename the file: {_describe(exc)}.") from exc
+
+    rec = storage.get(path)
+    thumbnail = rec.thumbnail if rec else None
+    new_thumb = _thumbnail_path(config, new)
+    if thumbnail and Path(thumbnail).exists():
+        try:
+            os.replace(thumbnail, new_thumb)
+            thumbnail = str(new_thumb)
+        except OSError:
+            pass  # keep the old thumbnail file; it still shows the right image
+    try:
+        storage.rename_image(path, str(new), thumbnail)
+    except Exception as exc:
+        new.rename(old)  # undo so the file and the index agree
+        if thumbnail == str(new_thumb) and rec and rec.thumbnail:
+            os.replace(new_thumb, rec.thumbnail)
+        raise RenameError("The file couldn't be renamed in the library, so its original name was kept.") from exc
+    return str(new)
 
 
 def remove_screenshots(paths: list[str], storage: Storage, config: Config) -> int:

@@ -9,7 +9,7 @@ import streamlit.components.v1 as components
 from PIL import Image
 
 from copy_image import CopyImageError, clipboard_png, copy_button_html
-from indexer import remove_screenshots
+from indexer import RenameError, remove_screenshots, rename_screenshot
 from search import similar
 from storage import ImageRecord
 from ui.components import empty_state, render_grid
@@ -56,6 +56,18 @@ def show_detail(ctx: AppContext, rec: ImageRecord, visible: list[ImageRecord]) -
                 open_original(rec.path)
             except OSError as exc:
                 st.error(f"Could not open the file: {exc}")
+        with st.popover("Rename", width="stretch"):
+            stem, suffix = Path(rec.path).stem, Path(rec.path).suffix
+            with st.form(f"rename:{rec.path}", border=False):
+                new_stem = st.text_input(f"New name (keeps {suffix})", value=stem)
+                submitted = st.form_submit_button("Rename file", type="primary")
+            if submitted:
+                try:
+                    state.selected = rename_screenshot(rec.path, new_stem, ctx.storage, ctx.config)
+                    st.rerun()
+                except RenameError as exc:
+                    st.error(str(exc))
+            st.caption("Renames the file on your computer. The image itself isn't changed.")
         with st.popover("Delete screenshot", width="stretch"):
             st.markdown("**Delete this screenshot from SnapRecall?** It disappears from your library "
                         "and search. The image file stays on your computer, and re-indexing won't "
