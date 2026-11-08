@@ -1,9 +1,16 @@
 import numpy as np
 
-from fakes import FakeEmbedder
+from fakes import FakeEmbedder, color_vector
 from models import normalize
-from search import query_terms, search, text_score, tokenize
+from search import query_terms, search, tokenize
 from storage import ImageRecord
+from text_index import TextIndex
+
+
+def text_score(terms, document):
+    """Score of one document for `terms`, through the full-text index."""
+    matches = TextIndex([ImageRecord(path="/shots/x.png", size=1, mtime_ns=1, ocr_text=document)]).search(terms)
+    return matches[0].score if matches else 0.0
 
 EMB = FakeEmbedder()
 
@@ -11,7 +18,7 @@ EMB = FakeEmbedder()
 def rec(name, text="", color=None, status="ok"):
     r = ImageRecord(path=f"/shots/{name}", size=1, mtime_ns=1, ocr_text=text, status=status)
     if color is not None:
-        r.embedding = normalize(np.array(color, dtype=np.float32) - 127.5)
+        r.embedding = color_vector(color)
         r.embed_model = EMB.name
     return r
 
@@ -62,15 +69,42 @@ def test_related_ocr_words_can_match_without_exact_text():
         name = "meaning-test"
 
         def embed_text(self, text):
-            if text.lower() in ("flame", "fire"):
+            if text.lower() in ("glad", "happy"):  # not in the synonym list
                 return np.array([1.0, 0.0])
             return np.array([0.0, 1.0])
 
-    records = [rec("one.png", "fire"), rec("two.png", "water")]
-    result = search("flame", records, MeaningEmbedder())
+    records = [rec("one.png", "happy"), rec("two.png", "water")]
+    result = search("glad", records, MeaningEmbedder())
     assert top(result) == ["one.png"]
     assert result.weak  # semantic matches are suggestions, not confirmed matches
-    assert search("flame", records).results == []
+    assert search("glad", records).results == []
+
+
+def test_synonyms_supplement_but_are_not_strong_matches():
+    records = [rec("one.png", "fire"), rec("two.png", "water")]
+    result = search("flame", records)
+    assert top(result) == ["one.png"] and result.weak
+    exact = search("fire", records)
+    assert top(exact) == ["one.png"] and not exact.weak
+
+
+def test_labels_are_searchable_but_never_strong_alone():
+    discord = rec("one.png", "yo peanut brain")
+    discord.source_app, discord.source_confidence = "Discord", 0.9
+    sunset = rec("two.png", "")
+    sunset.tags = [("sunset", 0.6)]
+    records = [discord, sunset, rec("three.png", "pasta")]
+
+    by_app = search("discord", records)
+    assert top(by_app) == ["one.png"] and by_app.weak
+    assert top(search("sunset", records)) == ["two.png"]
+    # Text found in the screenshot plus its likely app: a strong match.
+    both = search("discord peanut", records)
+    assert top(both) == ["one.png"] and not both.weak
+    # Aliases find the app too.
+    tweet = rec("four.png", "")
+    tweet.source_app, tweet.source_confidence = "X (Twitter)", 0.8
+    assert top(search("twitter", [tweet, *records])) == ["four.png"]
 
 
 def test_combined_uses_both_signals():
@@ -106,6 +140,9 @@ def test_unicode_tokenization():
     assert text_score(query_terms("Größe"), "DIE GRÖSSE") == 1.0
     assert text_score(["東京"], "東京タワーの写真") > 0
     assert text_score(["café"], "Café Central") == 1.0  # NFKC normalization
+    assert text_score(["kasespatzle"], "Käsespätzle 12,50 €") == 1.0  # accents ignored
+    assert text_score(["käsespätzle"], "Kasespatzle") == 1.0
+    assert text_score(["写真"], "東京タワーの写真") > 0  # inside a run of text without spaces
 
 
 def test_stopwords_dropped_unless_query_is_only_stopwords():
@@ -188,3 +225,12 @@ def test_sort_records_orders_like_a_file_explorer():
     assert names(sort_records([a, b, c], "Size (smallest)")) == ["img1.png", "img10.png", "IMG2.jpg"]
     assert names(sort_records([a, b, c], "Type")) == ["IMG2.jpg", "img1.png", "img10.png"]
     assert sort_records([a, b, c], "Best match") == [a, b, c]
+
+
+def test_clear_visual_winner_beats_a_one_word_text_hit():
+    # "red" appears in neither screenshot's text; "screen" appears in the distractor's.
+    red = rec("winner.png", "", (220, 30, 30))
+    distractor = rec("distractor.png", "loading screen", (200, 140, 140))
+    filler = [rec(f"filler_{i}.png", "", (200, 150 + i, 150)) for i in range(20)]
+    results = search("red screen", [distractor, red, *filler], EMB).results
+    assert results[0].record.name == "winner.png"

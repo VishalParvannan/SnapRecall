@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 from PIL import Image
 
-from models import normalize
+from models import OcrResult, normalize
 
 COLORS = {
     "red": (220, 30, 30),
@@ -28,11 +28,18 @@ class FakeOcr:
         self.texts, self.name, self.fail = texts, name, fail
         self.calls = 0
 
-    def extract(self, image: Image.Image) -> str:
+    def extract(self, image: Image.Image) -> OcrResult:
         self.calls += 1
         if self.fail:
             raise RuntimeError("simulated OCR failure")
-        return self.texts.get(dominant_color(image), "")
+        text = self.texts.get(dominant_color(image), "")
+        return OcrResult(text, 0.9 if text else None)
+
+
+def color_vector(color) -> np.ndarray:
+    """Embedding for a mean color. The 4th dimension is reserved for text with no color words,
+    so such a query is unrelated to every image, as with a real model."""
+    return normalize(np.append(np.asarray(color, dtype=np.float32) - 127.5, 0.0))
 
 
 class FakeEmbedder:
@@ -47,11 +54,13 @@ class FakeEmbedder:
 
     def embed_image(self, image: Image.Image) -> np.ndarray:
         self.calls += 1
-        mean = np.asarray(image.convert("RGB"), dtype=np.float32).reshape(-1, 3).mean(axis=0)
-        return normalize(mean - 127.5)
+        return color_vector(np.asarray(image.convert("RGB"), dtype=np.float32).reshape(-1, 3).mean(axis=0))
+
+    def embed_images(self, images: list[Image.Image]) -> np.ndarray:
+        return np.stack([self.embed_image(im) for im in images])
 
     def embed_text(self, text: str) -> np.ndarray:
         words = [w for w in text.lower().split() if w in COLORS]
         if not words:
-            return normalize(np.array([0.01, 0.0, -0.01]))
-        return normalize(np.mean([np.array(COLORS[w]) - 127.5 for w in words], axis=0))
+            return np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+        return color_vector(np.mean([COLORS[w] for w in words], axis=0))

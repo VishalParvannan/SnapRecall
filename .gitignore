@@ -5,3 +5,5 @@ __pycache__/
 .snaprecall/
 *.db
 server_data/
+# Your own (private) evaluation screenshots; see README "Evaluating on your own screenshots".
+samples/private/

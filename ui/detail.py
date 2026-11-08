@@ -6,10 +6,11 @@ from pathlib import Path
 
 import streamlit as st
 import streamlit.components.v1 as components
-from PIL import Image
+from PIL import Image, ImageOps
 
 from copy_image import CopyImageError, clipboard_png, copy_button_html
 from indexer import RenameError, remove_screenshots, rename_screenshot
+from labels import describe_confidence
 from search import similar
 from storage import ImageRecord
 from ui.components import empty_state, render_grid
@@ -31,7 +32,7 @@ def show_detail(ctx: AppContext, rec: ImageRecord, visible: list[ImageRecord]) -
             try:
                 with Image.open(rec.path) as img:
                     img.load()
-                    st.image(img.copy(), width="stretch")
+                    st.image(ImageOps.exif_transpose(img), width="stretch")
             except OSError:
                 empty_state("🖼️", "This image can't be opened",
                             "It may have been moved or deleted. Try re-indexing the folder.")
@@ -41,12 +42,20 @@ def show_detail(ctx: AppContext, rec: ImageRecord, visible: list[ImageRecord]) -
         if rec.width:
             rows.append(("Size", f"{rec.width} × {rec.height} px · {rec.size / 1024:.0f} KB"))
         rows.append(("Modified", fmt_time(rec.mtime_ns)))
+        guessed = []  # generated automatically: shown with a caveat, never as facts
+        if rec.source_app:
+            guessed.append(("From", f"{rec.source_app} ({describe_confidence(rec.source_confidence or 0)})"))
+        if rec.tags:
+            guessed.append(("Might show", ", ".join(label for label, _ in rec.tags)))
         st.markdown(
             '<dl class="sr-meta">'
-            + "".join(f"<dt>{k}</dt><dd>{html.escape(v)}</dd>" for k, v in rows)
+            + "".join(f"<dt>{k}</dt><dd>{html.escape(v)}</dd>" for k, v in rows + guessed)
             + "</dl>",
             unsafe_allow_html=True,
         )
+        if guessed:
+            st.caption("“From” and “Might show” are guessed automatically from the picture and its text, "
+                       "and may be wrong.")
         try:
             components.html(copy_button_html(clipboard_png(rec.path)), height=72)
         except CopyImageError as exc:
@@ -81,6 +90,10 @@ def show_detail(ctx: AppContext, rec: ImageRecord, visible: list[ImageRecord]) -
         if rec.ocr_text:
             with st.expander("Text found in this screenshot"):
                 st.text(rec.ocr_text)
+                if rec.ocr_confidence is not None:
+                    quality = ("clear" if rec.ocr_confidence >= 0.8 else
+                               "mostly clear" if rec.ocr_confidence >= 0.5 else "hard to read; may contain mistakes")
+                    st.caption(f"Recognition quality: {quality}.")
 
     st.markdown('<div class="sr-section">Similar screenshots</div>', unsafe_allow_html=True)
     if embedder is None:

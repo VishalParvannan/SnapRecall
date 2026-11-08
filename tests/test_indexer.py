@@ -198,7 +198,7 @@ def test_ocr_and_embedding_saved_and_reused(env):
 
     rec = storage.get(str(shots / "a.png"))
     assert rec.ocr_text == "Connection refused" and rec.ocr_model == ocr.name
-    assert rec.embed_model == emb.name and rec.embedding.shape == (3,)
+    assert rec.embed_model == emb.name and rec.embedding.shape == (4,)
 
     index_folder(shots, storage, config, ocr, emb)
     assert ocr.calls == 1 and emb.calls == 1
@@ -385,3 +385,59 @@ def test_failed_index_update_restores_original_name(env, monkeypatch):
         indexer.rename_screenshot(str(a), "b", storage, config)
     assert a.exists() and not (shots / "b.png").exists()
     assert Path(storage.get(str(a)).thumbnail).exists()
+
+
+def test_exif_orientation_is_applied(env):
+    shots, config, storage = env
+    from PIL import Image as PILImage
+    image = PILImage.new("RGB", (60, 40), (220, 30, 30))
+    exif = PILImage.Exif()
+    exif[0x0112] = 6  # stored sideways; viewers rotate it 90 degrees
+    image.save(shots / "phone.jpg", exif=exif)
+
+    index_folder(shots, storage, config)
+    rec = storage.get(str(shots / "phone.jpg"))
+    assert (rec.width, rec.height) == (40, 60)
+    with PILImage.open(rec.thumbnail) as thumb:
+        assert thumb.height > thumb.width
+
+
+def test_content_hash_is_stored_as_identity(env):
+    import hashlib
+    shots, config, storage = env
+    a = make_image(shots / "a.png")
+    index_folder(shots, storage, config)
+    assert storage.get(str(a)).sha256 == hashlib.sha256(a.read_bytes()).hexdigest()
+
+
+def test_failed_reprocessing_keeps_earlier_results(env):
+    shots, config, storage = env
+    make_image(shots / "a.png")
+    index_folder(shots, storage, config, FakeOcr({"red": "hello"}), FakeEmbedder())
+
+    # A new OCR model fails: the earlier text stays searchable and the image is retried later.
+    report = index_folder(shots, storage, config, FakeOcr({}, name="fake-ocr-2", fail=True), FakeEmbedder())
+    rec = storage.get(str(shots / "a.png"))
+    assert rec.status == "partial" and report.failed
+    assert rec.ocr_text == "hello" and rec.ocr_model == "fake-ocr-1" and rec.ocr_confidence == 0.9
+    assert rec.embedding is not None
+
+    index_folder(shots, storage, config, FakeOcr({"red": "hello again"}, name="fake-ocr-2"), FakeEmbedder())
+    rec = storage.get(str(shots / "a.png"))
+    assert rec.status == "ok" and rec.ocr_text == "hello again"
+
+
+def test_unreadable_unchanged_file_keeps_its_record(env, monkeypatch):
+    shots, config, storage = env
+    make_image(shots / "a.png")
+    index_folder(shots, storage, config, FakeOcr({"red": "hello"}))
+    thumbnail = storage.get(str(shots / "a.png")).thumbnail
+
+    def locked(data):
+        raise PermissionError("locked by another program")
+    monkeypatch.setattr(indexer, "_open_upright", locked)
+    index_folder(shots, storage, config, FakeOcr({"red": "hello"}, name="fake-ocr-2"))
+
+    rec = storage.get(str(shots / "a.png"))
+    assert rec.status == "partial" and "earlier results" in rec.error
+    assert rec.ocr_text == "hello" and rec.thumbnail == thumbnail and Path(thumbnail).exists()

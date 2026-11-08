@@ -2,26 +2,29 @@
 
 How ranking works
 -----------------
-1. Text ranking: the query is split into words (Unicode-aware, lower-cased,
-   common filler words dropped). Each screenshot's filename and recognized
-   text are checked for each word: a whole-word match counts 1, a partial
-   match counts 0.6 (the start of a longer word, e.g. "connect" in
-   "connection"; or, for scripts written without spaces, any substring).
-   The text score is the average over query words.
-2. Visual ranking: the query and every screenshot are embedded with the same
-   image-text model; the visual score is their cosine similarity. Only the
-   top `visual_top_k` screenshots join the ranking.
-3. Combined search also compares the query embedding with recognized text
-   embeddings, adding a small bonus for likely related meanings. These
-   matches are suggestions and do not by themselves count as strong matches.
-4. Combination: the scores live on different scales, so we combine
-   *ranks* with reciprocal rank fusion (RRF):
-       score = text_score / (60 + text_rank) + 1 / (60 + visual_rank)
-   Scaling the text term by its score keeps a stray partial word match from
-   outranking a strong visual match (measured with evaluate.py).
-5. A result is "strong" if its text score is at least 0.5 or its visual score
-   reaches the configured threshold. If no result is strong, the response is
-   marked weak so the interface can say the matches are uncertain.
+1. Text candidates come from SQLite full-text search (see text_index.py) over filenames,
+   recognized text, and generated labels. Each query word scores 1 for a whole word or stem,
+   0.6 for the start of a longer word, 0.4 for a listed synonym, and 0.6 x confidence for a
+   generated label (likely source app or tag). The text score is the average over query words;
+   ties are ordered by FTS5's bm25 relevance.
+2. Visual candidates: the query and every screenshot are embedded with the same image-text
+   model; the visual score is their cosine similarity. The query is embedded both as written
+   and as "a screenshot of <query>", averaged. Each screenshot also has embeddings for square
+   regions of itself (see indexer.image_regions), and the visual score is the best of the whole
+   image and its regions, so small details like a profile picture or a logo can match. Only
+   the top `visual_top_k` screenshots join the ranking.
+3. Combined search also compares the query embedding with recognized text embeddings, adding
+   a small bonus for likely related meanings ("flame" for a screenshot that says "fire").
+4. Combination: the scores live on different scales, so we combine *ranks* with reciprocal
+   rank fusion (RRF), each term scaled by its strength:
+       score = text_score / (60 + text_rank)
+             + (visual_score / best_visual_score) ** 2 / (60 + visual_rank)
+   Scaling each term keeps a stray one-word text match from outranking a clear visual winner
+   (measured with evaluate.py).
+5. A result is "strong" if at least half the query is found in its filename or recognized text,
+   or its visual score reaches the configured threshold. Labels, synonyms, and related meanings
+   are suggestions and never make a result strong on their own. If no result is strong, the
+   response is marked weak so the interface can say the matches are uncertain.
 """
 from __future__ import annotations
 
@@ -34,15 +37,17 @@ from pathlib import Path
 
 import numpy as np
 
-from models import Embedder
+from indexer import region_model
+from models import Embedder, embed_texts, normalize
 from storage import ImageRecord
+from text_index import text_index_for
 
 RRF_K = 60
+VISUAL_SHARPNESS = 2  # see search(); smallest value that fixed visual queries on samples/eval
 SEMANTIC_TEXT_THRESHOLD = 0.75
 _text_embedding_cache = OrderedDict()
 _TEXT_CACHE_LIMIT = 2048
 STRONG_TEXT = 0.5
-PARTIAL_MATCH = 0.6
 STOPWORDS = {
     "a", "an", "the", "and", "or", "of", "to", "in", "on", "at", "for", "with", "from",
     "by", "is", "it", "that", "this", "i", "my", "me", "was", "some", "about", "wanted",
@@ -76,21 +81,6 @@ def query_terms(query: str) -> list[str]:
     return meaningful or terms
 
 
-def text_score(terms: list[str], document: str) -> float:
-    if not terms:
-        return 0.0
-    words = tokenize(document)
-    word_set = set(words)
-    joined = " ".join(words)
-    total = 0.0
-    for term in terms:
-        if term in word_set:
-            total += 1.0
-        elif _partial_match(term, word_set, joined):
-            total += PARTIAL_MATCH
-    return total / len(terms)
-
-
 def _partial_match(term: str, words: set[str], joined: str) -> bool:
     if not term.isascii():
         # Scripts written without spaces (e.g. CJK) form long "words".
@@ -100,21 +90,38 @@ def _partial_match(term: str, words: set[str], joined: str) -> bool:
     return any(len(w) >= 4 and term.startswith(w) for w in words)  # "tomatoes" -> "tomato"
 
 
-def _document(rec: ImageRecord) -> str:
-    return f"{Path(rec.path).stem}\n{rec.ocr_text or ''}"
-
-
-def _semantic_text_vector(embedder: Embedder, text: str) -> np.ndarray:
+def _semantic_text_vectors(embedder: Embedder, texts: list[str]) -> list[np.ndarray]:
     # Cache by model instance and content: changed OCR is automatically re-encoded.
-    key = (embedder, text)
-    if key in _text_embedding_cache:
-        _text_embedding_cache.move_to_end(key)
-        return _text_embedding_cache[key]
-    vector = embedder.embed_text(text)
-    _text_embedding_cache[key] = vector
-    if len(_text_embedding_cache) > _TEXT_CACHE_LIMIT:
+    # Texts not seen before are embedded together in batches.
+    missing = list(dict.fromkeys(t for t in texts if (embedder, t) not in _text_embedding_cache))
+    if missing:
+        for text, vector in zip(missing, embed_texts(embedder, missing)):
+            _text_embedding_cache[(embedder, text)] = vector
+    vectors = []
+    for text in texts:
+        _text_embedding_cache.move_to_end((embedder, text))
+        vectors.append(_text_embedding_cache[(embedder, text)])
+    while len(_text_embedding_cache) > max(_TEXT_CACHE_LIMIT, len(texts)):
         _text_embedding_cache.popitem(last=False)
-    return vector
+    return vectors
+
+
+def visual_scores(records: list[ImageRecord], q: np.ndarray, embedder: Embedder) -> np.ndarray:
+    """Similarity of each record to the query: the best of the whole image and its regions,
+    so a small detail (an avatar, a logo) can match even when the whole screenshot doesn't."""
+    scores = np.stack([r.embedding for r in records]) @ q
+    regions_name = region_model(embedder)
+    for i, rec in enumerate(records):
+        if rec.region_embeddings is not None and rec.region_model == regions_name:
+            scores[i] = max(scores[i], float((rec.region_embeddings @ q).max()))
+    return scores
+
+
+def query_vectors(embedder: Embedder, query: str) -> tuple[np.ndarray, np.ndarray]:
+    """(plain query, query for visual search). The visual one averages the plain query with
+    "a screenshot of ..."; CLIP matches screenshots better that way. One batched model pass."""
+    plain, framed = embed_texts(embedder, [query, f"a screenshot of {query}"])
+    return plain, normalize(plain + framed)
 
 
 def search(query: str, records: list[ImageRecord], embedder: Embedder | None = None,
@@ -128,11 +135,10 @@ def search(query: str, records: list[ImageRecord], embedder: Embedder | None = N
     records = [r for r in records if r.status != "error"]
 
     text: dict[str, float] = {}
+    facts: dict[str, float] = {}
     if mode in ("combined", "text"):
-        for rec in records:
-            score = text_score(terms, _document(rec))
-            if score > 0:
-                text[rec.path] = score
+        for match in text_index_for(records).search(terms):  # best first
+            text[match.path], facts[match.path] = match.score, match.fact_score
 
     visual: dict[str, float] = {}
     semantic: dict[str, float] = {}
@@ -140,32 +146,37 @@ def search(query: str, records: list[ImageRecord], embedder: Embedder | None = N
         usable = [r for r in records if r.embedding is not None and r.embed_model == embedder.name]
         if usable or (mode == "combined" and any(r.ocr_text for r in records)):
             try:
-                q = embedder.embed_text(query)
+                q, q_visual = query_vectors(embedder, query)
             except Exception:
                 response.notice = "Visual search is unavailable right now; showing text matches only."
             else:
                 if usable:
-                    sims = np.stack([r.embedding for r in usable]) @ q
+                    sims = visual_scores(usable, q_visual, embedder)
                     order = np.argsort(-sims)[:visual_top_k]
                     visual = {usable[i].path: float(sims[i]) for i in order}
-                if mode == "combined":
-                    for rec in records:
-                        if not rec.ocr_text:
-                            continue
-                        try:
-                            similarity = float(_semantic_text_vector(embedder, rec.ocr_text) @ q)
-                        except Exception:
-                            response.notice = "Some recognized text could not be searched by meaning."
-                            continue
-                        if similarity >= SEMANTIC_TEXT_THRESHOLD:
-                            # Exact matches remain stronger than related meanings.
-                            semantic[rec.path] = similarity
+                with_text = [rec for rec in records if rec.ocr_text] if mode == "combined" else []
+                try:
+                    vectors = _semantic_text_vectors(embedder, [rec.ocr_text for rec in with_text])
+                except Exception:
+                    response.notice = "Recognized text could not be searched by meaning right now."
+                    vectors = []
+                for rec, vector in zip(with_text, vectors):
+                    similarity = float(vector @ q)
+                    if similarity >= SEMANTIC_TEXT_THRESHOLD:
+                        # Exact matches remain stronger than related meanings.
+                        semantic[rec.path] = similarity
 
     fused: dict[str, float] = {}
-    for scores, scaled in ((text, True), (visual, False)):
-        ranked = sorted(scores, key=lambda p: (-scores[p], p))
+    best_visual = max(visual.values(), default=0.0)
+    for scores, is_text in ((text, True), (visual, False)):
+        ranked = list(scores) if is_text else sorted(scores, key=lambda p: (-scores[p], p))
         for rank, path in enumerate(ranked, start=1):
-            weight = scores[path] if scaled else 1.0
+            if is_text:
+                weight = scores[path]
+            else:
+                # Rank alone treats visual #1 and #20 almost alike; weighting by closeness to the
+                # best visual match keeps a clear visual winner ahead of a one-word text hit.
+                weight = (max(scores[path], 0.0) / best_visual) ** VISUAL_SHARPNESS if best_visual > 0 else 1.0
             fused[path] = fused.get(path, 0.0) + weight / (RRF_K + rank)
 
     for rank, path in enumerate(sorted(semantic, key=lambda p: (-semantic[p], p)), start=1):
@@ -174,7 +185,7 @@ def search(query: str, records: list[ImageRecord], embedder: Embedder | None = N
     by_path = {r.path: r for r in records}
     for path, score in fused.items():
         t, v = text.get(path, 0.0), visual.get(path)
-        strong = t >= STRONG_TEXT or (v is not None and v >= visual_threshold)
+        strong = facts.get(path, 0.0) >= STRONG_TEXT or (v is not None and v >= visual_threshold)
         response.results.append(SearchResult(by_path[path], score, t, v, strong))
     response.results.sort(key=lambda r: (-r.score, -r.text_score, r.record.path))
     response.results = response.results[:limit]

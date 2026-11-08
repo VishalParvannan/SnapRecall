@@ -9,6 +9,7 @@ object is safe to share between Streamlit sessions and threads.
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass, fields
@@ -17,7 +18,7 @@ from typing import Iterator
 
 import numpy as np
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 5
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS images (
@@ -31,10 +32,19 @@ CREATE TABLE IF NOT EXISTS images (
     error        TEXT,
     ocr_text     TEXT,
     ocr_model    TEXT,
+    ocr_confidence REAL,                       -- mean recognizer confidence, 0-1
     embedding    BLOB,
     embed_model  TEXT,
     embed_dim    INTEGER,
-    sha256       TEXT,                         -- content hash, computed for backup
+    sha256       TEXT,                         -- content hash: the image's identity
+    region_embeddings BLOB,                    -- float32 rows, one per image region (see indexer)
+    region_model TEXT,
+    -- Generated labels (see labels.py): uncertain metadata, never treated as facts.
+    source_app        TEXT,                    -- NULL when the source app is unknown
+    source_confidence REAL,
+    source_evidence   TEXT,                    -- e.g. "interface, text"
+    tags         TEXT,                         -- JSON [[label, score], ...]
+    label_model  TEXT,
     indexed_at   TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE TABLE IF NOT EXISTS folders (
@@ -70,9 +80,17 @@ class ImageRecord:
     error: str | None = None
     ocr_text: str | None = None
     ocr_model: str | None = None
+    ocr_confidence: float | None = None
     embedding: np.ndarray | None = None
     embed_model: str | None = None
     sha256: str | None = None
+    region_embeddings: np.ndarray | None = None  # shape (regions, embed_dim)
+    region_model: str | None = None
+    source_app: str | None = None
+    source_confidence: float | None = None
+    source_evidence: str | None = None
+    tags: list[tuple[str, float]] | None = None
+    label_model: str | None = None
 
     @property
     def name(self) -> str:
@@ -90,6 +108,15 @@ class FolderInfo:
 
 _COLUMNS = [f.name for f in fields(ImageRecord)] + ["embed_dim"]
 
+# Columns added by each schema version, so older indexes are upgraded in place.
+_ADDED_COLUMNS = {
+    3: ["images ADD COLUMN sha256 TEXT", "folders ADD COLUMN backup INTEGER NOT NULL DEFAULT 0"],
+    4: ["images ADD COLUMN region_embeddings BLOB", "images ADD COLUMN region_model TEXT"],
+    5: ["images ADD COLUMN ocr_confidence REAL", "images ADD COLUMN source_app TEXT",
+        "images ADD COLUMN source_confidence REAL", "images ADD COLUMN source_evidence TEXT",
+        "images ADD COLUMN tags TEXT", "images ADD COLUMN label_model TEXT"],
+}
+
 
 class Storage:
     def __init__(self, db_path: str | Path):
@@ -100,10 +127,11 @@ class Storage:
             has_tables = conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name='images'"
             ).fetchone()
-            if has_tables and version == 2:
-                # Version 3 only adds columns, so existing indexes are kept.
-                conn.execute("ALTER TABLE images ADD COLUMN sha256 TEXT")
-                conn.execute("ALTER TABLE folders ADD COLUMN backup INTEGER NOT NULL DEFAULT 0")
+            if has_tables and 2 <= version < SCHEMA_VERSION:
+                # Versions 3 onward only add columns, so existing indexes are kept.
+                for target in range(version + 1, SCHEMA_VERSION + 1):
+                    for change in _ADDED_COLUMNS[target]:
+                        conn.execute(f"ALTER TABLE {change}")
             elif has_tables and version != SCHEMA_VERSION:
                 # The index is a rebuildable cache, so an outdated schema is dropped.
                 conn.executescript(
@@ -306,6 +334,10 @@ def _to_row(rec: ImageRecord) -> dict:
         values["embed_dim"] = int(vector.size)
     else:
         values["embed_dim"] = None
+    if rec.region_embeddings is not None:
+        values["region_embeddings"] = np.asarray(rec.region_embeddings, dtype=np.float32).tobytes()
+    if rec.tags is not None:
+        values["tags"] = json.dumps([[label, round(float(score), 4)] for label, score in rec.tags])
     return values
 
 
@@ -313,4 +345,11 @@ def _to_record(row: sqlite3.Row) -> ImageRecord:
     values = {f.name: row[f.name] for f in fields(ImageRecord)}
     if values["embedding"] is not None:
         values["embedding"] = np.frombuffer(values["embedding"], dtype=np.float32)
+    if values["region_embeddings"] is not None and row["embed_dim"]:
+        values["region_embeddings"] = np.frombuffer(values["region_embeddings"],
+                                                    dtype=np.float32).reshape(-1, row["embed_dim"])
+    else:
+        values["region_embeddings"] = None
+    if values["tags"] is not None:
+        values["tags"] = [(label, score) for label, score in json.loads(values["tags"])]
     return ImageRecord(**values)

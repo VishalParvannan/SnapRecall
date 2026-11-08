@@ -134,5 +134,59 @@
     "query": "violin concert seating chart",
     "kind": "none",
     "relevant": []
+  },
+  {
+    "query": "flames",
+    "kind": "synonym",
+    "relevant": [
+      "shot_061.png"
+    ]
+  },
+  {
+    "query": "a blaze",
+    "kind": "synonym",
+    "relevant": [
+      "shot_061.png"
+    ]
+  },
+  {
+    "query": "fire burning at night",
+    "kind": "ambiguous",
+    "relevant": [
+      "shot_061.png"
+    ]
+  },
+  {
+    "query": "orange sky at dusk",
+    "kind": "ambiguous",
+    "relevant": [
+      "shot_051.png"
+    ]
+  },
+  {
+    "query": "discord chat",
+    "kind": "app",
+    "relevant": [
+      "shot_064.png"
+    ]
+  },
+  {
+    "query": "powershell window",
+    "kind": "app",
+    "relevant": [
+      "shot_062.png"
+    ]
+  },
+  {
+    "query": "excel spreadsheet with a budget",
+    "kind": "app",
+    "relevant": [
+      "shot_063.png"
+    ]
+  },
+  {
+    "query": "a photo of a cat",
+    "kind": "none",
+    "relevant": []
   }
 ]

@@ -75,3 +75,16 @@ Build a shareable evaluation set where practical, with roughly 50–100 screensh
 5. Improve onboarding, performance, accessibility, and packaging throughout.
 
 Keep the README accurate about what is implemented, how to run it, where data is stored, and known limitations.
+
+
+## Recognition and retrieval implementation plan
+
+Use pretrained models first; do not assume a custom model needs to be trained. Process each changed image locally: normalize orientation, extract OCR text and confidence, generate an image embedding, and save model versions and image identity. Optionally use a local caption or tagging model for concrete objects and scenes; store captions as uncertain generated metadata, not facts. Identify source apps only when visual branding, interface elements, or OCR provide evidence, and store a confidence score; otherwise leave the source unknown. Never assume the foreground application or filename proves the source.
+
+At query time, retrieve candidates from SQLite full-text search over OCR, filenames, and optional captions, and from text-to-image embedding similarity. Normalize or fuse ranks, then rank exact text matches and visual semantic matches together; tune weights using labelled examples. Support visual similarity with image-to-image embeddings. For example, a query for flame should retrieve a fire image through semantic similarity even without visible text; evaluate this explicitly rather than guaranteeing it. Use optional synonyms as a supplement, not as the only mechanism.
+
+Track OCR and embedding versions separately, reprocess stale data, and preserve prior successful data when processing fails. Keep model inference and stored content local by default. Measure retrieval quality, latency, storage, and CPU performance on a consented, representative evaluation set, including app screenshots, synonyms, visually ambiguous scenes, and no-match queries.
+
+.venv\Scripts\activate
+streamlit run app.py
+

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import warnings
+from dataclasses import dataclass
 from typing import Protocol
 
 import numpy as np
@@ -23,10 +24,16 @@ class ModelLoadError(RuntimeError):
     """A model could not be loaded; the message is safe to show to users."""
 
 
+@dataclass
+class OcrResult:
+    text: str
+    confidence: float | None = None  # recognizer confidence 0-1, weighted by text length
+
+
 class OcrEngine(Protocol):
     name: str
 
-    def extract(self, image: Image.Image) -> str: ...
+    def extract(self, image: Image.Image) -> OcrResult: ...
 
 
 class Embedder(Protocol):
@@ -34,7 +41,17 @@ class Embedder(Protocol):
 
     def embed_image(self, image: Image.Image) -> np.ndarray: ...
 
+    def embed_images(self, images: list[Image.Image]) -> np.ndarray: ...
+
     def embed_text(self, text: str) -> np.ndarray: ...
+
+
+def embed_texts(embedder: Embedder, texts: list[str], batch_size: int = 64) -> np.ndarray:
+    """One row per text, batched when the embedder supports it."""
+    batch = getattr(embedder, "embed_texts", None)
+    if batch is None:
+        return np.stack([embedder.embed_text(t) for t in texts])
+    return np.vstack([batch(texts[i:i + batch_size]) for i in range(0, len(texts), batch_size)])
 
 
 def normalize(vector: np.ndarray) -> np.ndarray:
@@ -66,9 +83,18 @@ class EasyOcrEngine:
             ) from exc
         self.name = f"easyocr-{easyocr.__version__}:{'+'.join(languages)}"
 
-    def extract(self, image: Image.Image) -> str:
-        lines = self._reader.readtext(np.asarray(image.convert("RGB")), detail=0, paragraph=True)
-        return "\n".join(lines)
+    def extract(self, image: Image.Image) -> OcrResult:
+        from easyocr.utils import get_paragraph
+
+        # Paragraph mode drops per-line confidences, so read lines with their confidence and
+        # group them with EasyOCR's own paragraph step (same text as readtext(paragraph=True)).
+        lines = self._reader.readtext(np.asarray(image.convert("RGB")), detail=1, paragraph=False)
+        if not lines:
+            return OcrResult("", None)
+        weights = [max(len(text.strip()), 1) for _, text, _ in lines]
+        confidence = sum(w * float(c) for w, (_, _, c) in zip(weights, lines)) / sum(weights)
+        paragraphs = get_paragraph(lines, x_ths=1.0, y_ths=0.5, mode="ltr")
+        return OcrResult("\n".join(text for _, text in paragraphs), round(confidence, 4))
 
 
 class OpenClipEmbedder:
@@ -107,6 +133,20 @@ class OpenClipEmbedder:
         with self._torch.no_grad():
             features = self._model.encode_image(batch)[0]
         return normalize(features.float().cpu().numpy())
+
+    def embed_images(self, images: list[Image.Image]) -> np.ndarray:
+        """Embed several images in one batch; returns one normalized row per image."""
+        batch = self._torch.stack([self._preprocess(im.convert("RGB")) for im in images]).to(self._device)
+        with self._torch.no_grad():
+            features = self._model.encode_image(batch).float().cpu().numpy()
+        return features / np.maximum(np.linalg.norm(features, axis=1, keepdims=True), 1e-12)
+
+    def embed_texts(self, texts: list[str]) -> np.ndarray:
+        """Embed several texts in one batch (much faster than one at a time on a CPU)."""
+        tokens = self._tokenizer(list(texts)).to(self._device)
+        with self._torch.no_grad():
+            features = self._model.encode_text(tokens).float().cpu().numpy()
+        return features / np.maximum(np.linalg.norm(features, axis=1, keepdims=True), 1e-12)
 
     def embed_text(self, text: str) -> np.ndarray:
         tokens = self._tokenizer([text]).to(self._device)

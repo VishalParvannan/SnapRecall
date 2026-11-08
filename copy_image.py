@@ -20,7 +20,7 @@ import io
 import json
 from pathlib import Path
 
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageOps, UnidentifiedImageError
 
 # Larger images make the page slow to load and may be rejected by browsers.
 MAX_PNG_BYTES = 40 * 1024 * 1024
@@ -37,7 +37,8 @@ def clipboard_png(path: str | Path) -> bytes:
         with Image.open(path) as img:
             img.load()
             has_alpha = img.mode in ("RGBA", "LA", "PA") or "transparency" in img.info
-            image = img.convert("RGBA" if has_alpha else "RGB")
+            # The clipboard has no orientation tag, so rotate the pixels the way viewers show them.
+            image = ImageOps.exif_transpose(img).convert("RGBA" if has_alpha else "RGB")
     except FileNotFoundError:
         raise CopyImageError("The original file is missing. It may have been moved or deleted.") from None
     except PermissionError:

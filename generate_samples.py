@@ -163,6 +163,95 @@ SHAPE_SCREENS = {
                                        width=84, vertical=False),
 }
 
+def campfire():
+    img = shape_screen("#0d0d1a", [("rect", (0, 400, 800, 500), "#1b1b1b")])
+    d = ImageDraw.Draw(img)
+    d.polygon([(260, 420), (540, 380), (550, 405), (270, 445)], fill="#5d4037")
+    d.polygon([(250, 385), (530, 430), (520, 455), (245, 410)], fill="#4e342e")
+    for color, scale in (("#d32f2f", 1.0), ("#ff6d00", 0.72), ("#ffd600", 0.42)):
+        for dx, height in ((-60, 190), (0, 260), (55, 200)):
+            w, h = 70 * scale, height * scale
+            cx = 400 + dx * scale
+            d.polygon([(cx - w, 410), (cx - w * 0.6, 410 - h * 0.5), (cx, 410 - h),
+                       (cx + w * 0.6, 410 - h * 0.5), (cx + w, 410)], fill=color)
+    return img
+
+
+def chat_app():
+    """A Discord-style chat: server rail, channel list, messages, and message box."""
+    img = Image.new("RGB", SIZE, "#313338")
+    d = ImageDraw.Draw(img)
+    d.rectangle([0, 0, 64, 500], fill="#1e1f22")
+    for i, color in enumerate(["#5865f2", "#3ba55c", "#ed4245", "#faa61a"]):
+        d.ellipse([12, 12 + i * 56, 52, 52 + i * 56], fill=color)
+    d.rectangle([64, 0, 240, 500], fill="#2b2d31")
+    d.text((80, 16), "Study Group", font=font(18), fill="#f2f3f5")
+    d.text((80, 56), "TEXT CHANNELS", font=font(12), fill="#949ba4")
+    for i, channel in enumerate(["# general", "# homework", "# memes", "# gaming"]):
+        d.text((88, 80 + i * 30), channel, font=font(16), fill="#f2f3f5" if i == 0 else "#949ba4")
+    d.text((260, 16), "# general", font=font(18), fill="#f2f3f5")
+    d.line([(240, 50), (800, 50)], fill="#1f2023")
+    messages = [("maya", "#f47fff", "anyone done the chem worksheet?"), ("jordan", "#57f287", "yeah, question 4 is rough"),
+                ("maya", "#f47fff", "lol same. meet in the library at 5?")]
+    for i, (name, color, text) in enumerate(messages):
+        y = 80 + i * 90
+        d.ellipse([260, y, 300, y + 40], fill=color)
+        d.text((316, y), name, font=font(17), fill=color)
+        d.text((316 + 10 * len(name) + 14, y + 3), "Today at 6:58 PM", font=font(12), fill="#949ba4")
+        d.text((316, y + 26), text, font=font(17), fill="#dbdee1")
+    d.rounded_rectangle([256, 430, 784, 476], radius=8, fill="#383a40")
+    d.text((276, 444), "Message #general", font=font(16), fill="#80848e")
+    return img
+
+
+def powershell():
+    lines = ["Windows PowerShell", "Copyright (C) Microsoft Corporation. All rights reserved.", "",
+             "PS C:\\Users\\sam> npm run build", "> notes-app@1.0.0 build", "> vite build",
+             "built in 2.31s", "PS C:\\Users\\sam> _"]
+    img = Image.new("RGB", SIZE, "#012456")
+    d = ImageDraw.Draw(img)
+    d.rectangle([0, 0, 800, 30], fill="#ffffff")
+    d.text((12, 6), "Windows PowerShell", font=font(16), fill="#000000")
+    for i, line in enumerate(lines):
+        d.text((14, 48 + i * 28), line, font=font(18), fill="#eeedf0")
+    return img
+
+
+def spreadsheet():
+    img = Image.new("RGB", SIZE, "#ffffff")
+    d = ImageDraw.Draw(img)
+    d.rectangle([0, 0, 800, 34], fill="#217346")
+    d.text((290, 8), "Budget 2026.xlsx - Excel", font=font(16), fill="#ffffff")
+    d.rectangle([0, 34, 800, 66], fill="#f3f3f3")
+    d.text((12, 42), "File   Home   Insert   Page Layout   Formulas   Data   Review   View", font=font(14),
+           fill="#333333")
+    rows = [("", "Item", "Jan", "Feb", "Mar"), ("1", "Rent", "1,200", "1,200", "1,200"),
+            ("2", "Groceries", "450", "410", "475"), ("3", "Transport", "95", "120", "88"),
+            ("4", "Phone", "40", "40", "40"), ("5", "Total", "1,785", "1,770", "1,803")]
+    xs = [0, 40, 230, 380, 530, 680]
+    for r, row in enumerate(rows):
+        y = 80 + r * 44
+        d.line([(0, y + 40), (800, y + 40)], fill="#d4d4d4")
+        for c, value in enumerate(row):
+            d.text((xs[c] + 10, y + 12), value, font=font(16), fill="#222222")
+    for x in xs[1:]:
+        d.line([(x, 74), (x, 340)], fill="#d4d4d4")
+    d.rectangle([0, 466, 800, 500], fill="#f3f3f3")
+    d.text((60, 474), "Sheet1", font=font(14), fill="#217346")
+    return img
+
+
+# Added after the original 60 images, numbered from shot_061, so existing labels don't change.
+EXTRA_SCREENS = {
+    "campfire": campfire,
+    "discord_chat": chat_app,
+    "powershell": powershell,
+    "excel_budget": spreadsheet,
+}
+
+# Ground truth for source-app detection; every other image has no particular source app.
+EXPECTED_APPS = {"discord_chat": "Discord", "powershell": "PowerShell", "excel_budget": "Microsoft Excel"}
+
 QUERIES = [
     # exact text
     ("database connection refused", "exact", ["db_error"]),
@@ -188,6 +277,17 @@ QUERIES = [
     # no relevant match
     ("giraffe passport renewal", "none", []),
     ("violin concert seating chart", "none", []),
+    # synonyms: no image contains these words
+    ("flames", "synonym", ["campfire"]),
+    ("a blaze", "synonym", ["campfire"]),
+    # visually ambiguous: the campfire and the sunset are both orange, yellow, and dark
+    ("fire burning at night", "ambiguous", ["campfire"]),
+    ("orange sky at dusk", "ambiguous", ["sunset"]),
+    # source apps
+    ("discord chat", "app", ["discord_chat"]),
+    ("powershell window", "app", ["powershell"]),
+    ("excel spreadsheet with a budget", "app", ["excel_budget"]),
+    ("a photo of a cat", "none", []),
 ]
 
 
@@ -221,9 +321,16 @@ def build_eval(out: Path, seed: int = 7) -> None:
         image, ext = images[key]
         filenames[key] = f"shot_{idx:03d}.{ext}"
         image.save(out / filenames[key], quality=90)  # quality only affects JPEG
+    extra = list(EXTRA_SCREENS)
+    random.Random(seed + 1).shuffle(extra)
+    for idx, key in enumerate(extra, start=len(order) + 1):
+        filenames[key] = f"shot_{idx:03d}.png"
+        EXTRA_SCREENS[key]().save(out / filenames[key])
     queries = [{"query": q, "kind": kind, "relevant": [filenames[r] for r in rel]}
                for q, kind, rel in QUERIES]
     (out / "queries.json").write_text(json.dumps(queries, indent=2, ensure_ascii=False), encoding="utf-8")
+    apps = {filenames[key]: app for key, app in EXPECTED_APPS.items()}
+    (out / "apps.json").write_text(json.dumps(apps, indent=2), encoding="utf-8")
 
 
 def build_demo(out: Path) -> None:
