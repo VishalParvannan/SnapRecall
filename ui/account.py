@@ -138,12 +138,12 @@ def account_panel(ctx: AppContext) -> None:
             if enabled:
                 state.jobs = [("backup", info.path)]
             st.rerun()
-        if info.backup and st.button("☁  Back up now", width="stretch"):
+        if info.backup and st.button("Back up now", icon=":material/cloud_upload:", width="stretch"):
             state.jobs = [("backup", info.path)]
         st.caption(UPLOAD_EXPLANATION)
     else:
         st.caption("Select a single folder to choose whether it's backed up.")
-    if st.button("⬇  Download my screenshots", width="stretch"):
+    if st.button("Download my screenshots", icon=":material/download:", width="stretch"):
         state.jobs = [("download", None)]
     st.caption(f"Saves backed-up screenshots to {ctx.config.download_dir} and adds that folder here. "
                "Existing files are never overwritten.")

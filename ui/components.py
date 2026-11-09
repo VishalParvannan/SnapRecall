@@ -9,6 +9,7 @@ import streamlit as st
 from search import excerpt
 from storage import ImageRecord
 from ui.formatting import fmt_time
+from ui.styles import icon_svg
 
 state = st.session_state
 
@@ -16,8 +17,9 @@ COLS = 4
 
 
 def empty_state(icon: str, title: str, text: str) -> None:
+    """`icon` is a name from ui.styles (folder, inbox, calendar, search, image)."""
     st.markdown(
-        f'<div class="sr-empty"><div class="icon">{icon}</div><h3>{html.escape(title)}</h3>'
+        f'<div class="sr-empty"><div class="icon">{icon_svg(icon, 28)}</div><h3>{html.escape(title)}</h3>'
         f"<div>{html.escape(text)}</div></div>",
         unsafe_allow_html=True,
     )

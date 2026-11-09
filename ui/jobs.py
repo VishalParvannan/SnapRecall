@@ -52,7 +52,7 @@ def run_sync_jobs(ctx: AppContext) -> None:
     jobs, state.jobs = list(state.jobs), []
     client = account_client(ctx)
     if client is None:
-        st.warning("Sign in to your account first.", icon="⚠️")
+        st.warning("Sign in to your account first.", icon=":material/warning:")
         return
     with st.container(border=True):
         heading = st.empty()

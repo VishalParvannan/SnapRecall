@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import streamlit as st
 
-st.set_page_config(page_title="SnapRecall", page_icon="🔎", layout="wide")
+st.set_page_config(page_title="SnapRecall", page_icon=":material/image_search:", layout="wide")
 
 from ui.account import ensure_account_checked  # noqa: E402
 from ui.components import empty_state  # noqa: E402
@@ -18,32 +18,38 @@ from ui.detail import show_detail  # noqa: E402
 from ui.folders import choose_folder  # noqa: E402
 from ui.jobs import run_pending_index, run_sync_jobs  # noqa: E402
 from ui.library import render_library_status  # noqa: E402
+from ui.login import require_login  # noqa: E402
 from ui.search_view import render_search  # noqa: E402
 from ui.sidebar import render_sidebar  # noqa: E402
-from ui.styles import apply_branding  # noqa: E402
+from ui.styles import apply_branding, show_logo  # noqa: E402
 
 apply_branding()
+require_login()
+show_logo()
 ctx = build_context()
 state = st.session_state
-ensure_account_checked(ctx)
+if not ctx.is_guest:
+    ensure_account_checked(ctx)
 
 render_sidebar(ctx)
 
 for problem in ctx.model_problems:
-    st.warning(problem + " Searching by filename still works.", icon="⚠️")
+    st.warning(problem + " Searching by filename still works.", icon=":material/warning:")
 
 run_pending_index(ctx)
 run_sync_jobs(ctx)
 
 if state.account_error and ctx.signed_in and not state.account.get("offline"):
-    st.error(state.account_error, icon="⚠️")
+    st.error(state.account_error, icon=":material/error:")
 
 if not state.folder:
-    empty_state("🗂️", "Find any screenshot by describing it",
-                "Choose a folder of screenshots to get started. They stay on this computer.")
-    _, mid, _ = st.columns([1, 1, 1])
+    empty_state("folder", "Find any screenshot by describing it",
+                "Choose a folder of screenshots to get started. They stay on this computer."
+                + (" As a guest, this library is deleted when you close the tab." if ctx.is_guest else ""))
+    _, mid, _ = st.columns([1, 0.8, 1])
     with mid:
-        if st.button("📂  Choose a folder…", type="primary", width="stretch", key="pick_main"):
+        if st.button("Choose a folder…", icon=":material/folder_open:", type="primary", width="stretch",
+                     key="pick_main"):
             choose_folder(ctx)
             st.rerun()
     st.stop()

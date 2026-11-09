@@ -64,17 +64,21 @@ MESSAGES = {
 
 _TEMPLATE = """<!doctype html>
 <html><head><meta charset="utf-8"><style>
-  body { margin: 0; font-family: "Source Sans 3", "Source Sans Pro", system-ui, -apple-system, "Segoe UI", sans-serif; }
-  button { width: 100%; height: 40px; border-radius: 0.6rem; border: 1px solid #4f46e5; cursor: pointer;
-           background: #4f46e5; color: #fff; font: inherit; font-size: 1rem; font-weight: 500;
-           transition: background .15s; }
-  button:hover { background: #4338ca; }
-  button:focus-visible { outline: 3px solid rgba(79,70,229,.3); outline-offset: 1px; }
+  /* Matches the app theme (.streamlit/config.toml, ui/styles.py). */
+  body { margin: 0; font-family: "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, system-ui, sans-serif; }
+  button { width: 100%; height: 40px; border-radius: 0.5rem; cursor: pointer; display: flex; align-items: center;
+           justify-content: center; gap: 8px; border: 1px solid rgba(255,255,255,.08); background: #8b5cf6;
+           color: #fff; font: inherit; font-size: 15px; font-weight: 600;
+           box-shadow: 0 1px 2px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.12); transition: background .15s; }
+  button:hover { background: #7c4ff0; }
+  button:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(139,92,246,.4); }
   button:disabled { opacity: .6; cursor: progress; }
-  #msg { font-size: 0.85rem; margin-top: 6px; min-height: 1.1em; line-height: 1.3; }
-  .ok { color: #15803d; } .error { color: #b42318; }
+  #msg { font-size: 13px; margin-top: 6px; min-height: 1.1em; line-height: 1.3; }
+  .ok { color: #4ade80; } .error { color: #f87171; }
 </style></head><body>
-<button id="copy" type="button">📋&nbsp; __LABEL__</button>
+<button id="copy" type="button"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+  stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="12"
+  height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>__LABEL__</button>
 <div id="msg" role="status" aria-live="polite"></div>
 <script>
 const DATA = "__DATA__";

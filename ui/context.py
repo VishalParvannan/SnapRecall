@@ -13,9 +13,24 @@ from storage import FolderInfo, Storage
 ALL_FOLDERS = "__all__"  # sentinel: browse and search every indexed folder
 
 
+def _library_config(index_dir: str) -> Config:
+    from ui.login import get_home
+    return load_config(index_dir, cache_dir=get_home()[0].cache_dir)
+
+
 @st.cache_resource
+def get_account_backend(index_dir: str):
+    config = _library_config(index_dir)
+    return config, Storage(config.db_path)
+
+
 def get_backend():
-    config = load_config()
+    """The signed-in user's library. A guest library isn't cached between sessions: it is
+    deleted when the session ends."""
+    user = st.session_state.user
+    if user["kind"] == "account":
+        return get_account_backend(user["dir"])
+    config = _library_config(user["dir"])
     return config, Storage(config.db_path)
 
 
@@ -47,7 +62,12 @@ class AppContext:
 
     @property
     def signed_in(self) -> bool:
+        """Signed in to the optional cloud backup account (not the local account)."""
         return st.session_state.account is not None
+
+    @property
+    def is_guest(self) -> bool:
+        return st.session_state.user["kind"] == "guest"
 
 
 def init_state() -> None:

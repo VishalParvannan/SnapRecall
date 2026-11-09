@@ -249,7 +249,7 @@ def process_image(path: Path, config: Config, ocr: OcrEngine | None = None,
     if embedder is None or embedding_current:
         try:
             labels = compute_labels(rec.ocr_text, embedder, rec.embedding if embedder is not None else None,
-                                    cache_dir=config.index_dir)
+                                    cache_dir=config.cache_dir or config.index_dir)
             rec.source_app, rec.source_confidence = labels.source_app, labels.source_confidence
             rec.source_evidence, rec.tags = labels.source_evidence, labels.tags
             rec.label_model = label_model(embedder)

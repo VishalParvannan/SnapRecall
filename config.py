@@ -3,7 +3,7 @@
 Every setting can be overridden with an environment variable so model
 choices and index paths never require changes to core logic:
 
-    SNAPRECALL_HOME             index directory (default ~/.snaprecall)
+    SNAPRECALL_HOME             home folder for accounts and libraries (default ~/.snaprecall)
     SNAPRECALL_OCR              "0" disables text recognition
     SNAPRECALL_OCR_LANGS        comma-separated EasyOCR languages (default "en")
     SNAPRECALL_VISUAL           "0" disables visual search
@@ -36,6 +36,7 @@ class Config:
     visual_threshold: float = 0.29
     sync_url: str = "http://127.0.0.1:8765"
     download_dir: Path = Path.home() / "Pictures" / "SnapRecall Backup"
+    cache_dir: Path | None = None  # model data shared between libraries; None means index_dir
 
     @property
     def db_path(self) -> Path:
@@ -56,9 +57,13 @@ def _flag(name: str, default: bool = True) -> bool:
     return default if value is None else value.strip().lower() not in {"0", "false", "no", "off"}
 
 
+def snaprecall_home() -> Path:
+    return Path(os.environ.get("SNAPRECALL_HOME") or Path.home() / ".snaprecall").expanduser().resolve()
+
+
 def load_config(index_dir: str | Path | None = None, **overrides) -> Config:
     if index_dir is None:
-        index_dir = os.environ.get("SNAPRECALL_HOME") or Path.home() / ".snaprecall"
+        index_dir = snaprecall_home()
     path = Path(index_dir).expanduser().resolve()
     (path / "thumbnails").mkdir(parents=True, exist_ok=True)
     env = os.environ

@@ -17,55 +17,39 @@ from ui.components import empty_state, render_grid
 from ui.context import AppContext
 from ui.folders import open_original
 from ui.formatting import fmt_time
+from ui.styles import section_label
 
 state = st.session_state
 
 
 def show_detail(ctx: AppContext, rec: ImageRecord, visible: list[ImageRecord]) -> None:
     embedder = ctx.embedder
-    if st.button("← Back to results", type="tertiary"):
+    if st.button("Back to results", icon=":material/arrow_back:", type="tertiary"):
         state.selected = None
         st.rerun()
-    col_img, col_info = st.columns([3, 1.3], gap="large")
+    col_img, col_info = st.columns([3, 1.3], gap="medium")
     with col_img:
-        with st.container(border=True):
+        with st.container(border=True, key="detail_image"):
             try:
                 with Image.open(rec.path) as img:
                     img.load()
                     st.image(ImageOps.exif_transpose(img), width="stretch")
             except OSError:
-                empty_state("🖼️", "This image can't be opened",
+                empty_state("image", "This image can't be opened",
                             "It may have been moved or deleted. Try re-indexing the folder.")
-    with col_info:
+    with col_info, st.container(border=True, key="detail_panel"):
         st.markdown(f'<div class="sr-detail-title">{html.escape(rec.name)}</div>', unsafe_allow_html=True)
-        rows = [("Folder", str(Path(rec.path).parent))]
-        if rec.width:
-            rows.append(("Size", f"{rec.width} × {rec.height} px · {rec.size / 1024:.0f} KB"))
-        rows.append(("Modified", fmt_time(rec.mtime_ns)))
-        guessed = []  # generated automatically: shown with a caveat, never as facts
-        if rec.source_app:
-            guessed.append(("From", f"{rec.source_app} ({describe_confidence(rec.source_confidence or 0)})"))
-        if rec.tags:
-            guessed.append(("Might show", ", ".join(label for label, _ in rec.tags)))
-        st.markdown(
-            '<dl class="sr-meta">'
-            + "".join(f"<dt>{k}</dt><dd>{html.escape(v)}</dd>" for k, v in rows + guessed)
-            + "</dl>",
-            unsafe_allow_html=True,
-        )
-        if guessed:
-            st.caption("“From” and “Might show” are guessed automatically from the picture and its text, "
-                       "and may be wrong.")
         try:
             components.html(copy_button_html(clipboard_png(rec.path)), height=72)
         except CopyImageError as exc:
             st.error(str(exc))
-        if st.button("Open original", width="stretch"):
+        if st.button("Open original", icon=":material/open_in_new:", width="stretch"):
             try:
                 open_original(rec.path)
             except OSError as exc:
                 st.error(f"Could not open the file: {exc}")
-        with st.popover("Rename", width="stretch"):
+        col_rename, col_delete = st.columns(2, gap="small")
+        with col_rename, st.popover("Rename", icon=":material/edit:", width="stretch"):
             stem, suffix = Path(rec.path).stem, Path(rec.path).suffix
             with st.form(f"rename:{rec.path}", border=False):
                 new_stem = st.text_input(f"New name (keeps {suffix})", value=stem)
@@ -77,7 +61,8 @@ def show_detail(ctx: AppContext, rec: ImageRecord, visible: list[ImageRecord]) -
                 except RenameError as exc:
                     st.error(str(exc))
             st.caption("Renames the file on your computer. The image itself isn't changed.")
-        with st.popover("Delete screenshot", width="stretch"):
+        with col_delete, st.popover("Delete", icon=":material/delete:", width="stretch",
+                                    help="Delete screenshot from SnapRecall"):
             st.markdown("**Delete this screenshot from SnapRecall?** It disappears from your library "
                         "and search. The image file stays on your computer, and re-indexing won't "
                         "bring it back.")
@@ -87,8 +72,25 @@ def show_detail(ctx: AppContext, rec: ImageRecord, visible: list[ImageRecord]) -
                 st.rerun()
         st.caption("Copy image puts the full-size picture on your clipboard. "
                    "Open original opens it in your default image viewer.")
+
+        section_label("Details")
+        rows = [("Folder", html.escape(str(Path(rec.path).parent)))]
+        if rec.width:
+            rows.append(("Size", f"{rec.width} × {rec.height} px · {rec.size / 1024:.0f} KB"))
+        rows.append(("Modified", html.escape(fmt_time(rec.mtime_ns))))
+        guess = '<span class="sr-guess">Guess</span>'  # generated automatically, never shown as fact
+        if rec.source_app:
+            rows.append((f"From{guess}", html.escape(
+                f"{rec.source_app} ({describe_confidence(rec.source_confidence or 0)})")))
+        if rec.tags:
+            rows.append((f"Might show{guess}", html.escape(", ".join(label for label, _ in rec.tags))))
+        st.markdown('<dl class="sr-meta">' + "".join(f"<dt>{k}</dt><dd>{v}</dd>" for k, v in rows) + "</dl>",
+                    unsafe_allow_html=True)
+        if rec.source_app or rec.tags:
+            st.caption("“From” and “Might show” are guessed automatically from the picture and its text, "
+                       "and may be wrong.")
         if rec.ocr_text:
-            with st.expander("Text found in this screenshot"):
+            with st.expander("Text found in this screenshot", icon=":material/notes:"):
                 st.text(rec.ocr_text)
                 if rec.ocr_confidence is not None:
                     quality = ("clear" if rec.ocr_confidence >= 0.8 else
