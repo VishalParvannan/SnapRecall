@@ -11,6 +11,9 @@ choices and index paths never require changes to core logic:
     SNAPRECALL_CLIP_MODEL       OpenCLIP architecture (default ViT-B-32)
     SNAPRECALL_CLIP_PRETRAINED  OpenCLIP weights (default laion2b_s34b_b79k)
     SNAPRECALL_VISUAL_THRESHOLD similarity treated as a strong visual match
+    SNAPRECALL_TEXT_MEANING     "0" turns off matching recognized text by meaning
+    SNAPRECALL_TEXT_MODEL       sentence-transformers model for that (default all-MiniLM-L6-v2)
+    SNAPRECALL_MEANING_THRESHOLD similarity from which recognized text counts as related to a query
     SNAPRECALL_SYNC_URL         optional account server (default http://127.0.0.1:8765)
     SNAPRECALL_DOWNLOAD_DIR     where "Download my screenshots" saves files
 """
@@ -34,9 +37,17 @@ class Config:
     clip_model: str = "ViT-B-32"
     clip_pretrained: str = "laion2b_s34b_b79k"
     visual_threshold: float = 0.29
+    enable_text_meaning: bool = True
+    text_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    meaning_threshold: float = 0.25
     sync_url: str = "http://127.0.0.1:8765"
     download_dir: Path = Path.home() / "Pictures" / "SnapRecall Backup"
     cache_dir: Path | None = None  # model data shared between libraries; None means index_dir
+
+    @property
+    def use_text_meaning(self) -> bool:
+        """Matching by meaning compares queries with recognized text, so it needs text recognition."""
+        return self.enable_text_meaning and self.enable_ocr
 
     @property
     def db_path(self) -> Path:
@@ -61,11 +72,14 @@ def snaprecall_home() -> Path:
     return Path(os.environ.get("SNAPRECALL_HOME") or Path.home() / ".snaprecall").expanduser().resolve()
 
 
-def load_config(index_dir: str | Path | None = None, **overrides) -> Config:
+def load_config(index_dir: str | Path | None = None, *, create: bool = True, **overrides) -> Config:
+    """Settings for the library in `index_dir`. `create=False` skips making its folders (used
+    when only the model settings are needed)."""
     if index_dir is None:
         index_dir = snaprecall_home()
     path = Path(index_dir).expanduser().resolve()
-    (path / "thumbnails").mkdir(parents=True, exist_ok=True)
+    if create:
+        (path / "thumbnails").mkdir(parents=True, exist_ok=True)
     env = os.environ
     settings = dict(
         enable_ocr=_flag("SNAPRECALL_OCR"),
@@ -77,6 +91,9 @@ def load_config(index_dir: str | Path | None = None, **overrides) -> Config:
         clip_model=env.get("SNAPRECALL_CLIP_MODEL", Config.clip_model),
         clip_pretrained=env.get("SNAPRECALL_CLIP_PRETRAINED", Config.clip_pretrained),
         visual_threshold=float(env.get("SNAPRECALL_VISUAL_THRESHOLD", Config.visual_threshold)),
+        enable_text_meaning=_flag("SNAPRECALL_TEXT_MEANING"),
+        text_model=env.get("SNAPRECALL_TEXT_MODEL", Config.text_model),
+        meaning_threshold=float(env.get("SNAPRECALL_MEANING_THRESHOLD", Config.meaning_threshold)),
         sync_url=env.get("SNAPRECALL_SYNC_URL", Config.sync_url),
         download_dir=Path(env.get("SNAPRECALL_DOWNLOAD_DIR", Config.download_dir)).expanduser(),
     )

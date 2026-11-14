@@ -15,7 +15,7 @@ from ui.account import ensure_account_checked  # noqa: E402
 from ui.components import empty_state  # noqa: E402
 from ui.context import build_context  # noqa: E402
 from ui.detail import show_detail  # noqa: E402
-from ui.folders import choose_folder  # noqa: E402
+from ui.folders import add_screenshots_button  # noqa: E402
 from ui.jobs import run_pending_index, run_sync_jobs  # noqa: E402
 from ui.library import render_library_status  # noqa: E402
 from ui.login import require_login  # noqa: E402
@@ -44,14 +44,12 @@ if state.account_error and ctx.signed_in and not state.account.get("offline"):
 
 if not state.folder:
     empty_state("folder", "Find any screenshot by describing it",
-                "Choose a folder of screenshots to get started. They stay on this computer."
-                + (" As a guest, this library is deleted when you close the tab." if ctx.is_guest else ""))
-    _, mid, _ = st.columns([1, 0.8, 1])
-    with mid:
-        if st.button("Choose a folder…", icon=":material/folder_open:", type="primary", width="stretch",
-                     key="pick_main"):
-            choose_folder(ctx)
-            st.rerun()
+                "Add a folder of screenshots, or pick individual screenshots, to get started. They stay "
+                "on this computer." + (" As a guest, this library is deleted when you close the tab."
+                                       if ctx.is_guest else ""))
+    _, middle, _ = st.columns([1, 0.75, 1])
+    with middle:
+        add_screenshots_button(ctx, "main")
     st.stop()
 
 visible = render_library_status(ctx)

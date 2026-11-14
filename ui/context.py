@@ -6,8 +6,8 @@ from typing import Any
 
 import streamlit as st
 
-from config import Config, load_config
-from models import ModelLoadError, load_embedder, load_ocr
+from config import Config, load_config, snaprecall_home
+from models import BackgroundModels
 from storage import FolderInfo, Storage
 
 ALL_FOLDERS = "__all__"  # sentinel: browse and search every indexed folder
@@ -34,31 +34,43 @@ def get_backend():
     return config, Storage(config.db_path)
 
 
-@st.cache_resource(show_spinner="Loading search models (the first run may download them)…")
-def get_models(_config):
-    ocr = embedder = None
-    problems = []
-    try:
-        ocr = load_ocr(_config)
-    except ModelLoadError as exc:
-        problems.append(str(exc))
-    try:
-        embedder = load_embedder(_config)
-    except ModelLoadError as exc:
-        problems.append(str(exc))
-    return ocr, embedder, problems
+@st.cache_resource(show_spinner=False)
+def get_models() -> BackgroundModels:
+    """One set of models for the whole app, loaded in the background. Called as early as the
+    sign-in screen so loading overlaps with signing in. Model settings come from the environment,
+    so they're the same for every library."""
+    return BackgroundModels(load_config(snaprecall_home(), create=False))
 
 
 @dataclass(frozen=True)
 class AppContext:
     config: Config
     storage: Storage
-    ocr: Any
-    embedder: Any
-    model_problems: list[str]
+    models: BackgroundModels
     folders: list[FolderInfo]
     known_paths: list[str]
     info: FolderInfo | None  # None for "All folders"
+
+    # None while still loading (or when unavailable): search then uses text matches only.
+    @property
+    def ocr(self) -> Any:
+        return self.models.ocr
+
+    @property
+    def embedder(self) -> Any:
+        return self.models.embedder
+
+    @property
+    def text_model(self) -> Any:
+        return self.models.text_model
+
+    @property
+    def models_loading(self) -> bool:
+        return not self.models.done
+
+    @property
+    def model_problems(self) -> list[str]:
+        return self.models.problems if self.models.done else []
 
     @property
     def signed_in(self) -> bool:
@@ -75,7 +87,8 @@ def init_state() -> None:
     state.setdefault("folder", None)
     state.setdefault("selected", None)
     state.setdefault("report", None)
-    state.setdefault("pending", None)
+    state.setdefault("pending", None)        # folders to index
+    state.setdefault("pending_files", None)  # individually chosen screenshots to add
     state.setdefault("picker_error", None)
     state.setdefault("account", None)        # {"email", "file_count", "bytes", "offline"} when signed in
     state.setdefault("account_error", None)
@@ -85,7 +98,7 @@ def init_state() -> None:
 
 def build_context() -> AppContext:
     config, storage = get_backend()
-    ocr, embedder, model_problems = get_models(config)
+    models = get_models()
     init_state()
     state = st.session_state
 
@@ -94,4 +107,4 @@ def build_context() -> AppContext:
     if state.folder not in known_paths and not (state.folder == ALL_FOLDERS and len(known_paths) > 1):
         state.folder = known_paths[0] if known_paths else None
     info = next((f for f in folders if f.path == state.folder), None)
-    return AppContext(config, storage, ocr, embedder, model_problems, folders, known_paths, info)
+    return AppContext(config, storage, models, folders, known_paths, info)

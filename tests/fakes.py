@@ -64,3 +64,13 @@ class FakeEmbedder:
         if not words:
             return np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
         return color_vector(np.mean([COLORS[w] for w in words], axis=0))
+
+
+# Top-level loaders, so a helper process (spawned, so it re-imports this module) can call them.
+def load_fake_embedder(config) -> FakeEmbedder:
+    return FakeEmbedder()
+
+
+def load_failing_model(config):
+    from models import ModelLoadError
+    raise ModelLoadError("Fake model refused to load.")

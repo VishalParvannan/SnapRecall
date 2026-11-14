@@ -24,14 +24,14 @@ from pathlib import Path
 
 from config import load_config
 from indexer import index_folder
-from models import ModelLoadError, load_embedder, load_ocr
+from models import ModelLoadError, load_embedder, load_ocr, load_text_model
 from search import search
 from storage import Storage
 
 MODES = ("text", "visual", "combined")
 
 
-def evaluate(records, queries, embedder, visual_threshold):
+def evaluate(records, queries, embedder, visual_threshold, text_model=None, meaning_threshold=0.25):
     rows = {}
     for mode in MODES:
         if mode != "text" and embedder is None:
@@ -39,7 +39,8 @@ def evaluate(records, queries, embedder, visual_threshold):
         top1 = top5 = answerable = none_ok = none_total = 0
         by_kind: dict[str, list[int]] = {}
         for q in queries:
-            resp = search(q["query"], records, embedder, mode=mode, visual_threshold=visual_threshold)
+            resp = search(q["query"], records, embedder, mode=mode, visual_threshold=visual_threshold,
+                          text_model=text_model, meaning_threshold=meaning_threshold)
             names = [r.record.name for r in resp.results]
             if q["relevant"]:
                 answerable += 1
@@ -59,13 +60,14 @@ def evaluate(records, queries, embedder, visual_threshold):
     return rows
 
 
-def latency_ms(records, queries, embedder, visual_threshold) -> dict:
+def latency_ms(records, queries, embedder, visual_threshold, text_model=None, meaning_threshold=0.25) -> dict:
     """Combined-search latency per query (after one warm-up query, which builds the text index)."""
-    search(queries[0]["query"], records, embedder, visual_threshold=visual_threshold)
+    options = dict(visual_threshold=visual_threshold, text_model=text_model, meaning_threshold=meaning_threshold)
+    search(queries[0]["query"], records, embedder, **options)
     times = []
     for q in queries:
         start = time.perf_counter()
-        search(q["query"], records, embedder, visual_threshold=visual_threshold)
+        search(q["query"], records, embedder, **options)
         times.append((time.perf_counter() - start) * 1000)
     times.sort()
     return {"mean": statistics.fmean(times), "p95": times[min(len(times) - 1, int(0.95 * len(times)))]}
@@ -124,11 +126,15 @@ def main() -> None:
 
     with tempfile.TemporaryDirectory() as tmp:
         config = load_config(args.index_dir or tmp)
-        ocr = embedder = None
+        ocr = embedder = text_model = None
         try:
             ocr = load_ocr(config)
         except ModelLoadError as exc:
             print(f"OCR unavailable: {exc}")
+        try:
+            text_model = load_text_model(config)
+        except ModelLoadError as exc:
+            print(f"Text meaning unavailable: {exc}")
         try:
             embedder = load_embedder(config)
         except ModelLoadError as exc:
@@ -140,14 +146,17 @@ def main() -> None:
         index_seconds = time.perf_counter() - start
         print(f"\nIndexed {report.processed} images, {len(report.failed)} problems")
         records = storage.folder_images(report.folder)
-        rows = evaluate(records, queries, embedder, config.visual_threshold)
-        latency = latency_ms(records, queries, embedder, config.visual_threshold)
+        rows = evaluate(records, queries, embedder, config.visual_threshold,
+                        text_model, config.meaning_threshold)
+        latency = latency_ms(records, queries, embedder, config.visual_threshold,
+                             text_model, config.meaning_threshold)
         sizes = storage_bytes(config)
         apps_file = args.apps or args.folder / "apps.json"
         apps = None
         if apps_file.exists():
             apps = app_detection(records, json.loads(apps_file.read_text(encoding="utf-8")))
-        models = {"ocr": getattr(ocr, "name", None), "visual": getattr(embedder, "name", None)}
+        models = {"ocr": getattr(ocr, "name", None), "visual": getattr(embedder, "name", None),
+                  "text_meaning": getattr(text_model, "name", None)}
 
     print(f"Models: {models}")
     print_table(rows)

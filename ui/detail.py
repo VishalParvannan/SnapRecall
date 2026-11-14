@@ -99,7 +99,9 @@ def show_detail(ctx: AppContext, rec: ImageRecord, visible: list[ImageRecord]) -
 
     st.markdown('<div class="sr-section">Similar screenshots</div>', unsafe_allow_html=True)
     if embedder is None:
-        st.caption("Finding similar screenshots needs visual search, which isn't available right now.")
+        st.caption("Visual search is still starting; similar screenshots will appear in a few seconds."
+                   if ctx.models_loading else
+                   "Finding similar screenshots needs visual search, which isn't available right now.")
         return
     matches = similar(rec, visible, embedder.name)
     if matches:

@@ -5,7 +5,7 @@ import html
 
 import streamlit as st
 
-from indexer import index_folder
+from indexer import INDIVIDUAL, index_files, index_folder
 from sync import SyncError, backup_folder, clear_session, download_all
 from ui.account import account_client, refresh_account
 from ui.context import AppContext
@@ -16,9 +16,11 @@ state = st.session_state
 
 
 def run_pending_index(ctx: AppContext) -> None:
-    if not state.pending:
+    if not state.pending and not state.pending_files:
         return
-    targets, state.pending = list(state.pending), None
+    # Folders are indexed by path; chosen screenshots go into the INDIVIDUAL collection.
+    targets = list(state.pending or []) + ([INDIVIDUAL] if state.pending_files else [])
+    files, state.pending, state.pending_files = list(state.pending_files or []), None, None
     with st.container(border=True):
         heading = st.empty()
         bar = st.progress(0.0, text="Scanning folder…")
@@ -26,9 +28,22 @@ def run_pending_index(ctx: AppContext) -> None:
     def progress(i: int, total: int, name: str) -> None:
         bar.progress(i / total, text=f"{i} of {total} · {name}")
 
+    # Indexing without the models would store screenshots with no text or visual data, so wait
+    # for them here (they're usually ready by now: loading starts on the sign-in screen).
+    if ctx.models_loading:
+        heading.markdown("**Getting text recognition and visual search ready…**")
+        bar.progress(0.0, text="This takes a few seconds after SnapRecall starts.")
+        ctx.models.wait()
+
     reports = []
     for n, target in enumerate(targets, start=1):
         suffix = f" ({n} of {len(targets)})" if len(targets) > 1 else ""
+        if target == INDIVIDUAL and files:
+            count = f"{len(files)} screenshot{'s' if len(files) != 1 else ''}"
+            heading.markdown(f"**Adding {count}{suffix}**")
+            bar.progress(0.0, text="Checking files…")
+            reports.append(index_files(files, ctx.storage, ctx.config, ctx.ocr, ctx.embedder, progress))
+            continue
         heading.markdown(f"**Indexing {html.escape(folder_label(target))}{suffix}**")
         bar.progress(0.0, text="Scanning folder…")
         try:

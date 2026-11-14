@@ -6,12 +6,21 @@ from pathlib import Path
 
 import streamlit as st
 
+from indexer import INDIVIDUAL
 from storage import ImageRecord
 from ui.context import AppContext
 from ui.formatting import fmt_scan_time, folder_label
 from ui.styles import icon_svg
 
 state = st.session_state
+
+
+@st.fragment(run_every=1.5)
+def _refresh_when_models_ready(ctx: AppContext) -> None:
+    """Checks quietly in the background and reruns the page once, when the models finish loading,
+    so a search already on screen gains its visual matches."""
+    if not ctx.models_loading:
+        st.rerun(scope="app")
 
 
 def render_library_status(ctx: AppContext) -> list[ImageRecord]:
@@ -21,13 +30,20 @@ def render_library_status(ctx: AppContext) -> list[ImageRecord]:
     visible = [r for r in records if r.status != "error"]
     errors = [r for r in records if r.status != "ok"]
 
-    status = [f'<span class="sr-chip" title="{html.escape(info.path if info else "All folders")}">'
-              f'{icon_svg("folder", 14)}{html.escape(folder_label(state.folder))}</span>',
+    individual = bool(info and info.path == INDIVIDUAL)
+    title = "Screenshots you chose one by one" if individual else (info.path if info else "All folders")
+    status = [f'<span class="sr-chip" title="{html.escape(title)}">'
+              f'{icon_svg("image" if individual else "folder", 14)}{html.escape(folder_label(state.folder))}</span>',
               f"{len(visible)} screenshot{'s' if len(visible) != 1 else ''}"]
     if info and info.last_scan_at:
         status.append(f"Indexed {html.escape(fmt_scan_time(info.last_scan_at))}")
     if ctx.signed_in and info and info.backup:
         status.append("Backup on")
+    if ctx.models_loading:
+        status.append('<span class="sr-loading" title="Searching by text and filename works now. Matches by '
+                      'what screenshots look like are added automatically when ready.">'
+                      "Visual search starting…</span>")
+        _refresh_when_models_ready(ctx)
     st.markdown('<div class="sr-page-title">Your screenshots</div>'
                 '<div class="sr-status">' + '<span class="sr-dot">•</span>'.join(status) + "</div>",
                 unsafe_allow_html=True)
@@ -43,7 +59,13 @@ def render_library_status(ctx: AppContext) -> list[ImageRecord]:
         parts = [f"{n} {label}" for label, n in totals.items() if n]
         st.success("Indexing complete — " + (", ".join(parts) if parts else "everything was up to date") + ".",
                    icon=":material/check_circle:")
-        scan_errors = [e for r in shown_reports for e in r.plan.errors]
+        skipped = [(Path(p).name, msg) for r in shown_reports if r.folder == INDIVIDUAL
+                   for p, msg in r.plan.errors + [f for f in r.failed if f[1] == "Not a PNG or JPEG image"]]
+        if skipped:
+            st.warning(f"{len(skipped)} chosen file{'s' if len(skipped) != 1 else ''} couldn't be added: "
+                       + "; ".join(f"{name}: {msg}" for name, msg in skipped[:3])
+                       + ("…" if len(skipped) > 3 else ""), icon=":material/warning:")
+        scan_errors = [e for r in shown_reports if r.folder != INDIVIDUAL for e in r.plan.errors]
         if scan_errors:
             st.warning(
                 f"{len(scan_errors)} locations couldn't be read, so missing files weren't removed. "

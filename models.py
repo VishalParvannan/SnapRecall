@@ -9,10 +9,16 @@ work without them installed.
 """
 from __future__ import annotations
 
+import atexit
 import logging
+import pickle
+import subprocess
+import sys
+import threading
 import warnings
 from dataclasses import dataclass
-from typing import Protocol
+from pathlib import Path
+from typing import Callable, Protocol
 
 import numpy as np
 from PIL import Image
@@ -155,6 +161,186 @@ class OpenClipEmbedder:
         return normalize(features.float().cpu().numpy())
 
 
+class SentenceEmbedder:
+    """Compares meanings of short texts, used to match a query with a screenshot's recognized text.
+
+    Unlike CLIP's text encoder, it is trained on sentence similarity, so words that go together
+    ("plane", "departures", "baggage") land close together though they share no letters.
+    Texts longer than the model's input limit (256 word pieces for the default model) are cut off.
+    """
+
+    def __init__(self, model_name: str):
+        try:
+            from sentence_transformers import SentenceTransformer
+        except ImportError as exc:
+            raise ModelLoadError(
+                "Matching text by meaning needs sentence-transformers. Install it with "
+                "`pip install -r requirements-models.txt`."
+            ) from exc
+        logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
+        try:
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message=".*unauthenticated requests.*")
+                self._model = SentenceTransformer(model_name)
+        except Exception as exc:
+            raise ModelLoadError(
+                f"Could not load the text meaning model ({exc.__class__.__name__}). "
+                "The first run needs an internet connection to download it."
+            ) from exc
+        self.name = f"sentence-transformers:{model_name}"
+
+    def embed_texts(self, texts: list[str]) -> np.ndarray:
+        """One normalized row per text."""
+        vectors = self._model.encode(list(texts), batch_size=32, normalize_embeddings=True,
+                                     convert_to_numpy=True, show_progress_bar=False)
+        return np.asarray(vectors, dtype=np.float32)
+
+    def embed_text(self, text: str) -> np.ndarray:
+        return self.embed_texts([text])[0]
+
+
+# ---- loading models without slowing the app down ----------------------------
+def _load_problem(exc: Exception) -> str:
+    if isinstance(exc, ModelLoadError):
+        return str(exc)
+    return f"A model failed to load ({exc.__class__.__name__})."
+
+
+_WORKER = Path(__file__).resolve().parent / "model_worker.py"
+
+
+class _Pipe:
+    """Pickled messages over a helper process's stdin/stdout (the protocol in model_worker.py)."""
+
+    def __init__(self, process: subprocess.Popen):
+        self.process = process
+
+    def send(self, message) -> None:
+        pickle.dump(message, self.process.stdin, protocol=pickle.HIGHEST_PROTOCOL)
+        self.process.stdin.flush()
+
+    def recv(self):
+        return pickle.load(self.process.stdout)  # waiting here releases the interpreter lock
+
+
+class ModelProcess:
+    """A model running in its own process, used like the model itself (same methods and `name`).
+
+    Calls are serialized with a lock: one model process handles one request at a time."""
+
+    def __init__(self, pipe: _Pipe, name: str, methods: list[str]):
+        self._pipe, self._process, self.name = pipe, pipe.process, name
+        self._methods = frozenset(methods)  # only what the real model has (embed_texts is optional)
+        self._lock = threading.Lock()
+
+    def _call(self, method: str, *args):
+        with self._lock:
+            try:
+                self._pipe.send((method, args))
+                status, value = self._pipe.recv()
+            except (EOFError, OSError) as exc:
+                raise RuntimeError("The model process stopped unexpectedly. Restart SnapRecall.") from exc
+        if status != "ok":
+            raise RuntimeError(value)
+        return value
+
+    def __getattr__(self, method: str):
+        if method.startswith("_") or method not in self._methods:
+            raise AttributeError(method)
+        return lambda *args: self._call(method, *args)
+
+
+_MODEL_METHODS = {"extract", "embed_image", "embed_images", "embed_text", "embed_texts"}
+_helpers: list[subprocess.Popen] = []
+
+
+@atexit.register
+def _stop_helpers() -> None:
+    """Closing stdin tells a helper to exit (it also does if this process is killed)."""
+    for process in _helpers:
+        try:
+            process.stdin.close()
+        except OSError:
+            pass
+
+
+class BackgroundModels:
+    """Loads the models in the background so the app is usable meanwhile.
+
+    Loading takes about 25 s on a laptop CPU, nearly all of it importing PyTorch/OpenCLIP/EasyOCR
+    and building the models (not downloading). Loading them on a thread of the app's own process
+    made pages about 5x slower while it ran (the work competes for Python's interpreter lock), so
+    by default each model loads and runs in its own helper process; the visual model and text
+    recognition load in parallel. Until a model is ready its attribute is None, which search already
+    handles (text matches only); indexing waits for `done`. A helper process (model_worker.py) exits
+    by itself when the app does (its stdin closes).
+
+    `in_process=True` loads on threads of this process instead (used by tests).
+    """
+
+    def __init__(self, config: Config, start: bool = True, in_process: bool = False,
+                 loaders: dict[str, Callable[[Config], object]] | None = None):
+        self.config = config
+        self.ocr: OcrEngine | None = None
+        self.embedder: Embedder | None = None
+        self.text_model: SentenceEmbedder | None = None  # compares a query's meaning with recognized text
+        self._problems: dict[str, str] = {}
+        self._loaders = loaders or {"embedder": load_embedder, "ocr": load_ocr, "text_model": load_text_model}
+        self._in_process = in_process
+        self._done = threading.Event()
+        if start:
+            threading.Thread(target=self._load_all, name="snaprecall-models", daemon=True).start()
+
+    @property
+    def problems(self) -> list[str]:
+        return [self._problems[k] for k in self._loaders if k in self._problems]
+
+    def _load_all(self) -> None:
+        try:
+            threads = [threading.Thread(target=self._load_one, args=item, daemon=True)
+                       for item in self._loaders.items()]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+        finally:
+            self._done.set()
+
+    def _load_one(self, attr: str, loader: Callable[[Config], object]) -> None:
+        if not getattr(self.config, _SWITCHES.get(loader, ""), True):
+            return  # turned off in settings: no helper process needed
+        try:
+            setattr(self, attr, loader(self.config) if self._in_process else self._spawn(loader))
+        except Exception as exc:  # never leave the app waiting forever
+            self._problems[attr] = _load_problem(exc)
+
+    def _spawn(self, loader: Callable[[Config], object]) -> ModelProcess | None:
+        # A plain subprocess, not multiprocessing: under Streamlit, multiprocessing's spawn re-runs
+        # the main script (app.py) in the child.
+        process = subprocess.Popen(
+            [sys.executable, str(_WORKER)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        _helpers.append(process)
+        pipe = _Pipe(process)
+        try:
+            pipe.send(list(sys.path))
+            pipe.send((loader, self.config))
+            status, value = pipe.recv()
+        except (EOFError, OSError):
+            raise ModelLoadError("The model process stopped while loading.") from None
+        if status != "ok":
+            raise ModelLoadError(value)
+        return None if value is None else ModelProcess(pipe, *value)
+
+    @property
+    def done(self) -> bool:
+        return self._done.is_set()
+
+    def wait(self, timeout: float | None = None) -> bool:
+        """Block until every model has loaded or failed; True when finished."""
+        return self._done.wait(timeout)
+
+
 def load_ocr(config: Config) -> OcrEngine | None:
     """Return the configured OCR engine, None if disabled, or raise ModelLoadError."""
     if not config.enable_ocr:
@@ -167,3 +353,14 @@ def load_embedder(config: Config) -> Embedder | None:
     if not config.enable_visual:
         return None
     return OpenClipEmbedder(config.clip_model, config.clip_pretrained)
+
+
+def load_text_model(config: Config) -> SentenceEmbedder | None:
+    """Return the text meaning model, None if disabled, or raise ModelLoadError."""
+    if not config.use_text_meaning:
+        return None
+    return SentenceEmbedder(config.text_model)
+
+
+_SWITCHES = {load_embedder: "enable_visual", load_ocr: "enable_ocr",
+             load_text_model: "use_text_meaning"}  # Config flag per loader

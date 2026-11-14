@@ -5,10 +5,10 @@ import html
 
 import streamlit as st
 
-from indexer import forget_folder, remove_screenshots
+from indexer import INDIVIDUAL, forget_folder, remove_screenshots
 from ui.account import account_panel
 from ui.context import ALL_FOLDERS, AppContext
-from ui.folders import choose_folder, switch_folder
+from ui.folders import add_screenshots_button, switch_folder
 from ui.formatting import folder_label
 from ui.login import GUEST_NOTICE, delete_account, sign_out
 from ui.styles import section_label
@@ -18,6 +18,8 @@ state = st.session_state
 
 def render_sidebar(ctx: AppContext) -> None:
     info, known_paths = ctx.info, ctx.known_paths
+    individual = bool(info and info.path == INDIVIDUAL)
+    scope = ("these screenshots" if individual else "this folder") if info else "all folders"
     with st.sidebar:
         user = state.user
         if ctx.is_guest:
@@ -47,27 +49,15 @@ def render_sidebar(ctx: AppContext) -> None:
             if choice != state.folder:
                 switch_folder(ctx, choice)
                 st.rerun()
-            where = info.path if info else f"Searching {len(known_paths)} folders"
+            where = (("Screenshots you chose one by one" if individual else info.path) if info
+                     else f"Searching {len(known_paths)} folders")
             st.markdown(f'<div class="sr-path">{html.escape(where)}</div>', unsafe_allow_html=True)
 
-        if st.button("Choose a folder…", icon=":material/create_new_folder:", type="primary", width="stretch",
-                     key="pick_sidebar"):
-            choose_folder(ctx)
-        if state.folder and st.button("Re-index " + ("this folder" if info else "all folders"),
-                                      icon=":material/refresh:", width="stretch"):
+        add_screenshots_button(ctx, "sidebar")
+        if state.folder and st.button("Re-index " + scope, icon=":material/refresh:", width="stretch"):
             state.pending = [info.path] if info else list(known_paths)
         if state.picker_error:
             st.error(state.picker_error)
-
-        with st.expander("Paste a folder path instead", icon=":material/edit:"):
-            with st.form("add_folder", clear_on_submit=True, border=False):
-                typed = st.text_input("Folder path", placeholder=r"C:\Users\you\Pictures\Screenshots",
-                                      label_visibility="collapsed")
-                if st.form_submit_button("Index folder", width="stretch"):
-                    if typed.strip():
-                        state.pending = [typed.strip().strip('"')]
-                    else:
-                        st.warning("Enter a folder path first.")
 
         st.divider()
         section_label("Preferences")
@@ -78,11 +68,12 @@ def render_sidebar(ctx: AppContext) -> None:
             st.caption("Index location")
             st.code(str(ctx.config.index_dir), language=None)
             st.caption("Set SNAPRECALL_HOME to change where accounts and libraries are kept.")
-            st.caption(f"Text recognition: {'on' if ctx.ocr else 'off'} · "
-                       f"Visual search: {'on' if ctx.embedder else 'off'}")
-            scope = "this folder" if info else "all folders"
+            def model_state(model) -> str:
+                return "on" if model else ("starting…" if ctx.models_loading else "off")
+            st.caption(f"Text recognition: {model_state(ctx.ocr)} · Visual search: {model_state(ctx.embedder)}")
             with st.popover("Delete all screenshots", width="stretch"):
-                st.markdown(f"**Delete every screenshot in {scope} from SnapRecall?** They disappear "
+                what = "all of these screenshots" if individual else f"every screenshot in {scope}"
+                st.markdown(f"**Delete {what} from SnapRecall?** They disappear "
                             "from your library and search. The image files stay on your computer, "
                             "and re-indexing won't bring them back. Backed-up copies in your account "
                             "aren't affected.")
@@ -94,10 +85,13 @@ def render_sidebar(ctx: AppContext) -> None:
             removed_count = len(ctx.storage.removed_paths())
             if removed_count and st.button(f"Restore {removed_count} deleted screenshots",
                                            width="stretch",
-                                           help="They return the next time you re-index their folder."):
+                                           help="They return the next time you re-index their folder. "
+                                                "Screenshots you chose one by one return when you "
+                                                "choose them again."):
                 ctx.storage.restore_removed()
                 st.rerun()
-            if info and st.button("Remove folder from index", width="stretch"):
+            if info and st.button("Remove these from the library" if individual else "Remove folder from index",
+                                  width="stretch", help="Only SnapRecall's data is removed; the files stay."):
                 forget_folder(info.path, ctx.storage, ctx.config)
                 switch_folder(ctx, None)
                 st.rerun()

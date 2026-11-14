@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
+from indexer import INDIVIDUAL
 from ui.context import ALL_FOLDERS
 
 
@@ -30,4 +31,6 @@ def fmt_bytes(n: float) -> str:
 def folder_label(path: str) -> str:
     if path == ALL_FOLDERS:
         return "All folders"
+    if path == INDIVIDUAL:
+        return "Individual screenshots"
     return Path(path).name or path

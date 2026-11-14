@@ -11,7 +11,7 @@ python -m venv .venv
 .venv\Scripts\activate                 # macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt        # app + tests (small)
 pip install torch --index-url https://download.pytorch.org/whl/cpu
-pip install -r requirements-models.txt # text recognition + visual search
+pip install -r requirements-models.txt # text recognition + visual search + matching text by meaning
 ```
 
 Without the model packages the app still runs and searches filenames, and says that text recognition / visual search are unavailable.
@@ -22,8 +22,11 @@ Without the model packages the app still runs and searches filenames, and says t
 |---|---|---|
 | Text recognition | EasyOCR, English detector + recognizer | ~100 MB |
 | Visual search | OpenCLIP `ViT-B-32` / `laion2b_s34b_b79k` | ~600 MB |
+| Text meaning | sentence-transformers `all-MiniLM-L6-v2` (Hugging Face) | ~90 MB |
 
-Models download automatically the first time the app starts (EasyOCR to `~/.EasyOCR`, OpenCLIP to the Hugging Face cache). After that, indexing and search work offline. The Python packages themselves (PyTorch especially) are a few hundred MB more.
+Models download automatically the first time the app starts (EasyOCR to `~/.EasyOCR`, OpenCLIP to the Hugging Face cache). After that, indexing and search work offline.
+
+**Startup.** Loading the models takes about 25 seconds each time the app starts, even when they're already downloaded (mostly importing PyTorch and building the models). So nobody waits for it: loading starts in the background as soon as the sign-in screen opens, and the library is usable right away. Until visual search is ready, the header shows *Visual search starting…* and searches use text and filenames. The page refreshes by itself once visual search is ready, and indexing waits for the models if needed. After sign-in on the test laptop, the library appeared in about 3 seconds (12 seconds when the models loaded inside the app process), and visual search was ready about 20 seconds later. Each model runs in its own helper process ([model_worker.py](model_worker.py)), so loading doesn't slow down the app. Together they use about 1.2 GB of memory, and they exit when the app stops. The Python packages themselves (PyTorch especially) are a few hundred MB more.
 
 Indexing speed depends heavily on the CPU. On the laptop used for testing (Intel i7-13620H, CPU only) it took about 12.5 seconds per screenshot, most of it text recognition, and a search took about half a second. Faster CPUs or a GPU are much quicker. `SNAPRECALL_REGIONS=0` saves about 3 seconds per screenshot.
 
@@ -33,7 +36,16 @@ Indexing speed depends heavily on the CPU. On the laptop used for testing (Intel
 streamlit run app.py
 ```
 
-The app opens on a sign-in screen (see [Signing in](#signing-in)). Then click **Choose a folder…** and pick your screenshot folder in the window that opens (File Explorer on Windows). You can also paste a path under **Paste a folder path instead**. Previously indexed folders are remembered and reopen without re-indexing. To try it quickly, choose `samples/demo`.
+The app opens on a sign-in screen (see [Signing in](#signing-in)). Then add screenshots in either of two ways:
+
+**Add screenshots…** opens a window where you can pick folders, individual screenshots, or both at once (hold Ctrl or Shift to pick several, or use **Add this whole folder** for the folder you're in). Double-click a folder to open it; the left side has shortcuts to Screenshots, Pictures, Desktop, Downloads and your drives, and you can type a path in the location bar.
+
+- A chosen **folder** is indexed with every PNG and JPEG in it and its subfolders.
+- Chosen **screenshots** are added to **Individual screenshots**, which works like a folder in the sidebar. Choosing more later adds to it, and **Re-index these screenshots** picks up edited files and drops deleted ones. If a whole folder or drive is unavailable, its screenshots are kept until it comes back.
+
+This is SnapRecall's own window rather than the system file window, because the system window can pick folders or files but not both together.
+
+The files are indexed where they are; nothing is copied or moved. Previously indexed folders and screenshots are remembered and reopen without re-indexing. To try it quickly, choose `samples/demo`.
 
 The app is meant to be run and used on the same computer: the folder chooser and **Open original** open on the computer running Streamlit. If the folder window doesn't appear, check behind the browser window.
 
@@ -110,6 +122,9 @@ All settings are environment variables (see [config.py](config.py)):
 | `SNAPRECALL_REGIONS` | `1` | `0` skips analysing regions of each screenshot (indexing is about 3 s per image faster on CPU, but small details like avatars and logos are found less often) |
 | `SNAPRECALL_CLIP_MODEL` / `SNAPRECALL_CLIP_PRETRAINED` | `ViT-B-32` / `laion2b_s34b_b79k` | OpenCLIP model |
 | `SNAPRECALL_VISUAL_THRESHOLD` | `0.29` | Similarity counted as a strong visual match |
+| `SNAPRECALL_TEXT_MEANING` | `1` | `0` turns off matching recognized text by meaning (it also needs text recognition) |
+| `SNAPRECALL_TEXT_MODEL` | `sentence-transformers/all-MiniLM-L6-v2` | Model that compares the meaning of a query with recognized text |
+| `SNAPRECALL_MEANING_THRESHOLD` | `0.25` | Similarity from which recognized text counts as related to the query |
 | `SNAPRECALL_SYNC_URL` | `http://127.0.0.1:8765` | Optional account server |
 | `SNAPRECALL_DOWNLOAD_DIR` | `~/Pictures/SnapRecall Backup` | Where downloaded screenshots are saved |
 
@@ -119,7 +134,7 @@ Each stored result records which model produced it. Changing a model setting mak
 
 - Screenshots and recognized text are processed locally. Without an account, the only network access is the one-time model download. With an account, screenshots are uploaded only from folders where you turned backup on (see [Accounts and backup](#accounts-and-backup-optional)). Streamlit's usage statistics are turned off in `.streamlit/config.toml`.
 - Originals are only read, never modified or deleted. The one exception is **Rename** in the detail view, which renames the file when you ask (its contents are unchanged).
-- Only folders you choose are indexed.
+- Only folders and screenshots you choose are indexed.
 - Everything is kept in `SNAPRECALL_HOME` (default `~/.snaprecall`): `accounts.db` (usernames and password hashes), one folder per account under `users/` and per guest session under `guests/`, each with a SQLite index (`index.db`) and thumbnails, and `cache/label_prompts_*.npz`, the visual model's vectors for the label descriptions in [labels.py](labels.py) (no screenshot data). Delete that folder to remove all accounts and indexed data. "Remove folder from index" in Settings forgets one folder.
 - Screenshot contents are not written to logs. Sample images in `samples/` are synthetic, generated by `generate_samples.py`.
 
@@ -148,9 +163,9 @@ If any directory or file can't be read, the scan is marked incomplete and **no r
 
 1. *Text score* — candidates come from SQLite full-text search (FTS5, [text_index.py](text_index.py)) over filenames, recognized text, and generated labels. Each query word scores 1 for a whole word or its stem ("tomatoes" finds "tomato"), 0.6 for the start of a longer word ("conn" finds "connection") or, in Chinese, Japanese, and Thai, a match inside a run of text, 0.4 for a listed synonym ("flame" finds "fire"; a small supplement), and 0.6 × confidence for a label (the likely source app, its aliases such as "twitter" for X, or a tag). The text score is the average over query words; equal scores are ordered by FTS5's bm25 relevance. Matching ignores case and accents, and common filler words ("the", "with") are ignored. The full-text index is built in memory from the screenshots being searched and rebuilt only when they change.
 2. *Visual score* — cosine similarity between the query's text embedding and each screenshot's image embedding, taking the best of the whole screenshot and its regions. The query is embedded both as written and as "a screenshot of …", averaged.
-3. *Combined* — the two scores are on different scales, so their **ranks** are merged with reciprocal rank fusion, each term scaled by its strength: `score = text / (60 + text_rank) + (visual / best_visual)² / (60 + visual_rank)`.
-   Combined search also compares the query with recognized text using the visual model's text encoder and gives likely related meanings a small ranking bonus. These suggestions are not treated as strong matches by themselves. The first search may take longer while text embeddings are created; they are cached in memory for later searches. The similarity threshold is experimental and should be evaluated on real screenshots.
-4. A result is a strong match only if at least half the query is found in its filename or recognized text, or its visual score reaches the threshold. Labels, synonyms, and related meanings never make a result strong on their own. If nothing is strong, the app says there are no strong matches and shows the closest ones. Results are suggestions, not guarantees.
+3. *Meaning score* (combined search only) — a sentence-similarity model compares the query with the meaning of each screenshot's whole recognized text, so a screenshot whose text says "Departures", "Gates", and "Baggage" is found for "plane" although no word matches. Only screenshots at or above `SNAPRECALL_MEANING_THRESHOLD` count. Without the text meaning model, the visual model's own text encoder gives a smaller, noisier version of this signal.
+4. *Combined* — the scores are on different scales, so their **ranks** are merged with reciprocal rank fusion, each term scaled by its strength: `score = text / (60 + text_rank) + (visual / best_visual)² / (60 + visual_rank) + (meaning / best_meaning)² / (60 + meaning_rank)`. A screenshot only gains from a signal that actually found it, so an image that looks vaguely like many things (a plain line drawing, say) is no longer ranked highly just because nothing else matched. These suggestions are not treated as strong matches by themselves. The first search after starting the app also embeds every screenshot's recognized text; the vectors are cached in memory for later searches. The similarity threshold is experimental and should be evaluated on real screenshots.
+5. A result is a strong match only if at least half the query is found in its filename or recognized text, or its visual score reaches the threshold. Labels, synonyms, and related meanings never make a result strong on their own. If nothing is strong, the app says there are no strong matches and shows the closest ones. Results are suggestions, not guarantees.
 
 ## Evaluation
 
@@ -169,14 +184,14 @@ Results on `samples/eval` (EasyOCR 1.7.2 English, OpenCLIP 3.3 `ViT-B-32`/`laion
 |---|---|---|---|
 | Text (incl. labels) | 80% | 84% | 3/3 |
 | Visual | 96% | 100% | 3/3 |
-| **Combined** | **100%** | **100%** | 3/3 |
+| **Combined** | **96%** | **100%** | 3/3 |
 
 | Query type | Text | Visual | Combined (top-1) |
 |---|---|---|---|
 | Exact text | 5/6 | 5/6 | 6/6 |
 | Approximate wording | 6/6 | 6/6 | 6/6 |
 | Visual description | 3/6 | 6/6 | 6/6 |
-| Synonym | 2/2 | 2/2 | 2/2 |
+| Synonym | 2/2 | 2/2 | 1/2 |
 | Visually ambiguous | 1/2 | 2/2 | 2/2 |
 | Source app | 3/3 | 3/3 | 3/3 |
 
@@ -210,7 +225,7 @@ The index is built in a temporary folder, so your own index is untouched. The re
 pytest
 ```
 
-Tests use small deterministic fake models ([tests/fakes.py](tests/fakes.py)), so they need no downloads or GPU. They cover indexing, change detection, overlapping folders, unreadable folders, files vanishing mid-scan, interrupted runs, retries, keeping earlier results when reprocessing fails, EXIF orientation, content hashes, model and label changes, index upgrades, persistence, ordering, ranking, full-text matching (stems, accents, scripts without spaces), synonyms, label evidence rules (unknown by default, filenames ignored, ambiguous wording), Unicode text, empty input, copy image (full resolution, transparency, errors, originals untouched), local accounts (password hashing, wrong passwords, account deletion, moving a pre-accounts library, guest-library cleanup after the grace period and after the app exits), and cloud accounts (sign-in, isolation between accounts, upload checks, backup/download, deletion). The sync tests need `fastapi` and are skipped without it.
+Tests use small deterministic fake models ([tests/fakes.py](tests/fakes.py)), so they need no downloads or GPU. They cover indexing, individually chosen screenshots (adding more, changes, deletions, unavailable drives, overlap with folders, choosing a removed screenshot again), the file picker, change detection, overlapping folders, unreadable folders, files vanishing mid-scan, interrupted runs, retries, keeping earlier results when reprocessing fails, EXIF orientation, content hashes, model and label changes, index upgrades, persistence, ordering, ranking, full-text matching (stems, accents, scripts without spaces), synonyms, label evidence rules (unknown by default, filenames ignored, ambiguous wording), Unicode text, empty input, copy image (full resolution, transparency, errors, originals untouched), local accounts (password hashing, wrong passwords, account deletion, moving a pre-accounts library, guest-library cleanup after the grace period and after the app exits), and cloud accounts (sign-in, isolation between accounts, upload checks, backup/download, deletion). The sync tests need `fastapi` and are skipped without it.
 
 ## Project layout
 
@@ -219,13 +234,14 @@ Tests use small deterministic fake models ([tests/fakes.py](tests/fakes.py)), so
 | `config.py` | Settings: index location, models, thresholds |
 | `storage.py` | SQLite: images, folders, folder membership |
 | `indexer.py` | Discovery, change detection, thumbnails, OCR/embedding calls |
-| `models.py` | EasyOCR and OpenCLIP adapters |
+| `models.py` | EasyOCR, OpenCLIP, and sentence-transformers adapters, background loading in helper processes |
+| `model_worker.py` | Helper process that runs one model for the app |
 | `labels.py` | Generated labels: likely source app and tags |
 | `text_index.py` | Full-text search (SQLite FTS5) and synonyms |
 | `search.py` | Text, visual, and combined ranking |
 | `accounts.py` | Local accounts and temporary guest libraries |
 | `app.py` | Streamlit interface (sign-in screen in `ui/login.py`) |
-| `folder_picker.py` | Native folder chooser |
+| `folder_picker.py`, `picker_dialog.py` | The "Add screenshots" window (folders and files together) |
 | `copy_image.py` | Copy image to the browser device's clipboard |
 | `sync.py` | Optional account client: backup and download |
 | `sync_server/server.py` | Self-hostable account and backup server (FastAPI) |
@@ -240,9 +256,12 @@ Tests use small deterministic fake models ([tests/fakes.py](tests/fakes.py)), so
 - OCR with the default English model misreads some accented words (e.g. "Käsespätzle" as "Kasespatzle"); search ignores accents, so these are still found. Add languages with `SNAPRECALL_OCR_LANGS`.
 - The evaluation set is synthetic and small; real screenshot collections will behave differently. Its app screenshots are mock-ups drawn by `generate_samples.py`, so they test the evidence rules, not recognition of real app designs.
 - Generated labels are guesses. Source-app descriptions and tag thresholds were tuned on the synthetic set and **one** real screenshot (a Discord message, found as Discord with 0.65 confidence from its look; not included in the repository). Expect missed and occasionally wrong apps until they are checked on a larger, consented set of real screenshots (see [Evaluating on your own screenshots](#evaluating-on-your-own-screenshots)). Only the ~40 apps in `labels.py` can be named; tags come from a fixed list of ~70 objects and scenes.
+- **Matching text by meaning is a trade-off.** It rescues searches where the screenshot never shows the query's word but its text is related ("plane" finds a cartoon whose text says "Departures", "Gates", "Baggage"; on one real 22-screenshot library, that screenshot moved from 13th to 2nd). But it only decides the order when no result is a strong match, and similarity values for genuinely related text (about 0.26) are barely above those of loosely related text, so it can also promote a wrong screenshot: on `samples/eval` it costs one top-1 result ("a blaze", 100% → 96% combined; top-5 stays 100%). Both findings come from small sets (25 and 20 labelled queries) and the threshold (`SNAPRECALL_MEANING_THRESHOLD`) is untuned; raise it to make the signal more conservative, or set `SNAPRECALL_TEXT_MEANING=0` to switch it off. It only reads recognized text, so a screenshot with no text gets nothing from it, and recognized text longer than the model's input limit is cut off.
+- Loading the text meaning model adds a third helper process (more memory, not measured) and about 90 MB of download. Its vectors for recognized text are cached in memory only, so the first search after each start embeds every screenshot's text.
 - The visual model runs slowly on some CPUs (about 0.3–0.4 s per text on the laptop used for testing). Each search embeds the query once; the first search after starting the app also embeds every screenshot's recognized text, which takes longer. Label descriptions are embedded once and saved in the index folder.
 - Upgrading from an earlier index format rebuilds the index (screenshots are re-processed once). The upgrades that added region embeddings and labels keep the index; re-indexing adds them without re-running text recognition. EXIF orientation is applied to thumbnails then too, but text and embeddings of photos indexed sideways before this change are only redone if the file changes.
 - Region embeddings make indexing slower (about 3 s more per screenshot on a laptop CPU, versus about 9 s for text recognition) and add about 32 KB per screenshot to the index.
+- An individual screenshot that was deleted from the library and then restored (Settings) only comes back when you choose it again, because it no longer belongs to any folder.
 - Indexing runs inside the Streamlit request; closing the tab mid-index stops it (progress so far is kept).
 - Local accounts protect libraries from each other inside the app only. They are not a security boundary against someone using the same Windows account, and the sign-in is lost when the tab is refreshed (sign in again). There is no limit on wrong-password attempts yet.
 - Guest-data deletion after closing the tab has been tested with Streamlit's test runner, not yet by closing a real browser tab.

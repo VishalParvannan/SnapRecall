@@ -211,10 +211,12 @@ class Storage:
         with self._connect() as conn:
             return {r["path"] for r in conn.execute("SELECT path FROM removed_images")}
 
-    def restore_removed(self) -> int:
-        """Forget all removals, so the next re-index adds those screenshots again."""
+    def restore_removed(self, paths: list[str] | None = None) -> int:
+        """Forget removals (all, or just `paths`), so indexing adds those screenshots again."""
         with self._connect() as conn:
-            return conn.execute("DELETE FROM removed_images").rowcount
+            if paths is None:
+                return conn.execute("DELETE FROM removed_images").rowcount
+            return conn.executemany("DELETE FROM removed_images WHERE path = ?", [(p,) for p in paths]).rowcount
 
     # ---- folders and membership ------------------------------------------
     def save_folder(self, folder: str, complete: bool | None = None) -> None:

@@ -28,6 +28,10 @@ from storage import ImageRecord, Storage
 
 ProgressFn = Callable[[int, int, str], None]
 
+# Key of the collection of individually chosen screenshots. It's stored like a folder (so search,
+# filters, membership, and backup work unchanged) but can never be a real path.
+INDIVIDUAL = "snaprecall:individual"
+
 
 @dataclass
 class ScanPlan:
@@ -134,12 +138,44 @@ def plan_scan(folder: Path, storage: Storage, ocr: OcrEngine | None = None,
     paths, errors = discover_images(folder)
     removed = storage.removed_paths()  # screenshots the user removed from the library
     paths = [p for p in paths if str(p) not in removed]
+    plan = _plan_paths(paths, errors, storage, ocr, embedder, regions)
+    if plan.complete:
+        plan.missing = sorted(storage.member_paths(str(folder)) - {str(p) for p in paths})
+    return plan
+
+
+def plan_individual(picked: list[Path], storage: Storage, ocr: OcrEngine | None = None,
+                    embedder: Embedder | None = None, regions: bool = False) -> ScanPlan:
+    """Plan for the individually chosen screenshots: the ones chosen before plus `picked`.
+
+    A file counts as missing (and leaves the collection) only when its folder is still there;
+    if the folder itself can't be reached (an unplugged drive, say) the screenshot is kept.
+    """
+    members = storage.member_paths(INDIVIDUAL)
+    paths, errors, missing = [], [], []
+    for key in sorted(members | {str(p) for p in picked}):
+        path = Path(key)
+        try:
+            if path.is_file():
+                paths.append(path)
+            elif path.parent.is_dir():
+                missing.append(key)
+            else:
+                errors.append((key, "Its folder isn't available right now"))
+        except OSError as exc:
+            errors.append((key, _describe(exc)))
+    plan = _plan_paths(paths, errors, storage, ocr, embedder, regions)
+    plan.missing = [k for k in missing if k in members]
+    plan.errors += [(k, "No longer exists") for k in missing if k not in members]
+    return plan
+
+
+def _plan_paths(paths: list[Path], errors: list[tuple[str, str]], storage: Storage,
+                ocr: OcrEngine | None, embedder: Embedder | None, regions: bool) -> ScanPlan:
     plan = ScanPlan(errors=errors)
     plan.previous = storage.get_many([str(p) for p in paths])
-    seen: set[str] = set()
     for path in paths:
         key = str(path)
-        seen.add(key)
         try:
             st = path.stat()
         except OSError as exc:
@@ -154,8 +190,6 @@ def plan_scan(folder: Path, storage: Storage, ocr: OcrEngine | None = None,
             plan.retry.append(path)
         else:
             plan.unchanged.append(path)
-    if plan.complete:
-        plan.missing = sorted(storage.member_paths(str(folder)) - seen)
     return plan
 
 
@@ -264,13 +298,38 @@ def process_image(path: Path, config: Config, ocr: OcrEngine | None = None,
 def index_folder(folder: str | Path, storage: Storage, config: Config,
                  ocr: OcrEngine | None = None, embedder: Embedder | None = None,
                  progress: ProgressFn | None = None) -> IndexReport:
+    """Index a folder (with subfolders), or re-check the individual screenshots for INDIVIDUAL."""
+    if folder == INDIVIDUAL:
+        return index_files([], storage, config, ocr, embedder, progress)
     folder = Path(folder).expanduser().resolve()
     if not folder.is_dir():
         raise NotADirectoryError(f"Folder not found: {folder}")
     key = str(folder)
     storage.save_folder(key)
-
     plan = plan_scan(folder, storage, ocr, embedder, config.enable_regions)
+    return _index(key, plan, storage, config, ocr, embedder, progress)
+
+
+def index_files(paths: list[str | Path], storage: Storage, config: Config,
+                ocr: OcrEngine | None = None, embedder: Embedder | None = None,
+                progress: ProgressFn | None = None) -> IndexReport:
+    """Add individually chosen screenshots to the library (the INDIVIDUAL collection), and
+    re-check the ones chosen before. The files are indexed where they are, never copied."""
+    picked, unsupported = [], []
+    for raw in paths:
+        path = Path(raw).expanduser().resolve()
+        (picked if path.suffix.lower() in SUPPORTED_EXTENSIONS else unsupported).append(path)
+    # Choosing a screenshot again brings it back even if it was removed from the library earlier.
+    storage.restore_removed([str(p) for p in picked])
+    storage.save_folder(INDIVIDUAL)
+    plan = plan_individual(picked, storage, ocr, embedder, config.enable_regions)
+    report = _index(INDIVIDUAL, plan, storage, config, ocr, embedder, progress)
+    report.failed += [(str(p), "Not a PNG or JPEG image") for p in unsupported]
+    return report
+
+
+def _index(key: str, plan: ScanPlan, storage: Storage, config: Config, ocr: OcrEngine | None,
+           embedder: Embedder | None, progress: ProgressFn | None) -> IndexReport:
     report = IndexReport(folder=key, plan=plan)
     storage.add_members(key, [str(p) for p in plan.unchanged])
 
@@ -292,7 +351,7 @@ def index_folder(folder: str | Path, storage: Storage, config: Config,
         else:
             report.failed.append((rec.path, rec.error or "Unknown error"))
 
-    if plan.complete and plan.missing:
+    if plan.missing:  # planners only list files that are certainly gone
         for orphan in storage.remove_members(key, plan.missing):
             remove_thumbnail(config, orphan.thumbnail)
         report.removed = len(plan.missing)

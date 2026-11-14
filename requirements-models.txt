@@ -3,3 +3,4 @@
 torch>=2.5
 easyocr>=1.7.2
 open_clip_torch>=2.32
+sentence-transformers>=3.0  # matches a query with the meaning of recognized text

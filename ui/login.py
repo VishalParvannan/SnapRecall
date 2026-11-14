@@ -109,6 +109,8 @@ def user_dir() -> Path:
 
 def require_login() -> None:
     """Show the sign-in screen and stop the page until the visitor signs in or picks guest."""
+    from ui.context import get_models
+    get_models()  # start loading the search models in the background while the visitor signs in
     sweep_guest_libraries()
     user = state.get("user")
     if user:

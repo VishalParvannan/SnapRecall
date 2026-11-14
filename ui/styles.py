@@ -133,6 +133,10 @@ _CSS = """<style>
                text-overflow: ellipsis; white-space: nowrap; }
     .sr-chip svg { flex: none; }
     .sr-dot { color: var(--sr-border-strong); }
+    .sr-loading { display: inline-flex; align-items: center; gap: 0.4rem; color: var(--sr-muted); }
+    .sr-loading::before { content: ""; width: 0.5rem; height: 0.5rem; border-radius: 50%;
+        background: var(--sr-accent); animation: sr-pulse 1.2s ease-in-out infinite; }
+    @keyframes sr-pulse { 0%, 100% { opacity: .35; transform: scale(.85); } 50% { opacity: 1; transform: scale(1); } }
     .sr-page-title { font-size: 1.55rem; font-weight: 700; letter-spacing: -0.02em; margin: 0 0 0.35rem; }
 
     /* ---- search bar --------------------------------------------------------- */
@@ -246,6 +250,7 @@ _CSS = """<style>
     }
     @media (prefers-reduced-motion: reduce) {
         [class*="st-key-card_"], [class*="st-key-card_"]:hover { transition: none; transform: none; }
+        .sr-loading::before { animation: none; }
     }
     </style>""".replace("__SEARCH_ICON__", _SEARCH_ICON)
 

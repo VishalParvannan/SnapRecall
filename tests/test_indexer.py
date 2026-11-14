@@ -441,3 +441,87 @@ def test_unreadable_unchanged_file_keeps_its_record(env, monkeypatch):
     rec = storage.get(str(shots / "a.png"))
     assert rec.status == "partial" and "earlier results" in rec.error
     assert rec.ocr_text == "hello" and rec.thumbnail == thumbnail and Path(thumbnail).exists()
+
+
+# ---- individually chosen screenshots ---------------------------------------
+
+def test_individual_screenshots_index_only_the_chosen_files(env):
+    shots, config, storage = env
+    a = make_image(shots / "a.png")
+    b = make_image(shots / "sub" / "b.jpg")
+    make_image(shots / "not_chosen.png")
+    (shots / "notes.txt").write_text("x")
+
+    report = indexer.index_files([a, b, shots / "notes.txt"], storage, config)
+
+    assert report.folder == indexer.INDIVIDUAL and report.processed == 2
+    assert report.failed == [(str((shots / "notes.txt").resolve()), "Not a PNG or JPEG image")]
+    assert names(storage.folder_images(indexer.INDIVIDUAL)) == {"a.png", "b.jpg"}
+    assert indexer.INDIVIDUAL in [f.path for f in storage.list_folders()]
+    assert a.read_bytes() == make_image(shots / "copy.png").read_bytes()  # originals untouched
+
+
+def test_individual_screenshots_accumulate_and_skip_unchanged(env):
+    shots, config, storage = env
+    a, b = make_image(shots / "a.png"), make_image(shots / "b.png")
+    indexer.index_files([a], storage, config)
+    report = indexer.index_files([b, a], storage, config)  # choosing more keeps the earlier ones
+    assert report.processed == 1 and [p.name for p in report.plan.unchanged] == ["a.png"]
+    assert names(storage.folder_images(indexer.INDIVIDUAL)) == {"a.png", "b.png"}
+
+
+def test_individual_reindex_detects_changed_and_deleted_files(env):
+    shots, config, storage = env
+    a, b = make_image(shots / "a.png"), make_image(shots / "b.png")
+    indexer.index_files([a, b], storage, config)
+    make_image(a, color=(30, 60, 220))
+    bump_mtime(a)
+    b.unlink()
+
+    report = index_folder(indexer.INDIVIDUAL, storage, config)  # the sidebar's Re-index
+
+    assert [p.name for p in report.plan.changed] == ["a.png"] and report.removed == 1
+    assert names(storage.folder_images(indexer.INDIVIDUAL)) == {"a.png"}
+
+
+def test_individual_screenshot_kept_when_its_folder_is_unavailable(env):
+    shots, config, storage = env
+    drive = shots / "usb"
+    a = make_image(drive / "a.png")
+    indexer.index_files([a], storage, config)
+    renamed = shots / "usb-unplugged"
+    drive.rename(renamed)  # the whole folder is gone, as with an unplugged drive
+
+    report = index_folder(indexer.INDIVIDUAL, storage, config)
+
+    assert report.removed == 0 and not report.plan.complete
+    assert names(storage.folder_images(indexer.INDIVIDUAL)) == {"a.png"}
+
+
+def test_individual_screenshots_overlap_with_folders(env):
+    shots, config, storage = env
+    a = make_image(shots / "a.png")
+    index_folder(shots, storage, config)
+    report = indexer.index_files([a], storage, config)
+    assert report.processed == 0  # same image, already indexed: just added to the collection
+    forget_folder(indexer.INDIVIDUAL, storage, config)
+    assert names(storage.folder_images(str(shots))) == {"a.png"}
+    assert storage.get(str(a)) is not None
+
+
+def test_choosing_a_removed_screenshot_again_brings_it_back(env):
+    shots, config, storage = env
+    a = make_image(shots / "a.png")
+    indexer.index_files([a], storage, config)
+    indexer.remove_screenshots([str(a)], storage, config)
+    index_folder(indexer.INDIVIDUAL, storage, config)
+    assert storage.folder_images(indexer.INDIVIDUAL) == []
+    indexer.index_files([a], storage, config)
+    assert names(storage.folder_images(indexer.INDIVIDUAL)) == {"a.png"}
+
+
+def test_choosing_a_missing_file_reports_it(env):
+    shots, config, storage = env
+    report = indexer.index_files([shots / "gone.png"], storage, config)
+    assert report.processed == 0
+    assert report.plan.errors == [(str((shots / "gone.png").resolve()), "No longer exists")]

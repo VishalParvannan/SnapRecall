@@ -60,7 +60,8 @@ def render_search(ctx: AppContext, visible: list[ImageRecord]) -> None:
 
     range_note = "" if when == "Any time" else f" · {when.rstrip('…').lower()}"
     if query.strip():
-        response = search(query, pool, ctx.embedder, visual_threshold=ctx.config.visual_threshold)
+        response = search(query, pool, ctx.embedder, visual_threshold=ctx.config.visual_threshold,
+                          text_model=ctx.text_model, meaning_threshold=ctx.config.meaning_threshold)
         if response.notice:
             st.warning(response.notice, icon=":material/warning:")
         if not response.results:
