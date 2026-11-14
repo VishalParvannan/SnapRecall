@@ -27,6 +27,7 @@ from models import Embedder, OcrEngine
 from storage import ImageRecord, Storage
 
 ProgressFn = Callable[[int, int, str], None]
+CancelFn = Callable[[], bool]
 
 # Key of the collection of individually chosen screenshots. It's stored like a folder (so search,
 # filters, membership, and backup work unchanged) but can never be a real path.
@@ -59,6 +60,7 @@ class IndexReport:
     processed: int = 0
     removed: int = 0
     failed: list[tuple[str, str]] = field(default_factory=list)
+    cancelled: bool = False  # stopped on request; the rest is picked up by the next scan
 
 
 def _describe(exc: OSError) -> str:
@@ -297,22 +299,25 @@ def process_image(path: Path, config: Config, ocr: OcrEngine | None = None,
 
 def index_folder(folder: str | Path, storage: Storage, config: Config,
                  ocr: OcrEngine | None = None, embedder: Embedder | None = None,
-                 progress: ProgressFn | None = None) -> IndexReport:
-    """Index a folder (with subfolders), or re-check the individual screenshots for INDIVIDUAL."""
+                 progress: ProgressFn | None = None, cancel: CancelFn | None = None) -> IndexReport:
+    """Index a folder (with subfolders), or re-check the individual screenshots for INDIVIDUAL.
+
+    `cancel` is asked before each image; once it returns True the run stops, keeping everything
+    saved so far (see `_index`)."""
     if folder == INDIVIDUAL:
-        return index_files([], storage, config, ocr, embedder, progress)
+        return index_files([], storage, config, ocr, embedder, progress, cancel)
     folder = Path(folder).expanduser().resolve()
     if not folder.is_dir():
         raise NotADirectoryError(f"Folder not found: {folder}")
     key = str(folder)
     storage.save_folder(key)
     plan = plan_scan(folder, storage, ocr, embedder, config.enable_regions)
-    return _index(key, plan, storage, config, ocr, embedder, progress)
+    return _index(key, plan, storage, config, ocr, embedder, progress, cancel)
 
 
 def index_files(paths: list[str | Path], storage: Storage, config: Config,
                 ocr: OcrEngine | None = None, embedder: Embedder | None = None,
-                progress: ProgressFn | None = None) -> IndexReport:
+                progress: ProgressFn | None = None, cancel: CancelFn | None = None) -> IndexReport:
     """Add individually chosen screenshots to the library (the INDIVIDUAL collection), and
     re-check the ones chosen before. The files are indexed where they are, never copied."""
     picked, unsupported = [], []
@@ -323,13 +328,14 @@ def index_files(paths: list[str | Path], storage: Storage, config: Config,
     storage.restore_removed([str(p) for p in picked])
     storage.save_folder(INDIVIDUAL)
     plan = plan_individual(picked, storage, ocr, embedder, config.enable_regions)
-    report = _index(INDIVIDUAL, plan, storage, config, ocr, embedder, progress)
+    report = _index(INDIVIDUAL, plan, storage, config, ocr, embedder, progress, cancel)
     report.failed += [(str(p), "Not a PNG or JPEG image") for p in unsupported]
     return report
 
 
 def _index(key: str, plan: ScanPlan, storage: Storage, config: Config, ocr: OcrEngine | None,
-           embedder: Embedder | None, progress: ProgressFn | None) -> IndexReport:
+           embedder: Embedder | None, progress: ProgressFn | None,
+           cancel: CancelFn | None = None) -> IndexReport:
     report = IndexReport(folder=key, plan=plan)
     storage.add_members(key, [str(p) for p in plan.unchanged])
 
@@ -337,6 +343,11 @@ def _index(key: str, plan: ScanPlan, storage: Storage, config: Config, ocr: OcrE
     # keeps its progress and the next scan picks up the rest.
     todo = plan.to_process
     for i, path in enumerate(todo, start=1):
+        if cancel is not None and cancel():
+            # Stopped on request: keep what's saved, and leave the folder's last-scan record and
+            # its list of images alone (an unfinished scan proves nothing about missing files).
+            report.cancelled = True
+            return report
         if progress:
             progress(i, len(todo), path.name)
         try:
