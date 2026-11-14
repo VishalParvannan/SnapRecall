@@ -172,3 +172,39 @@ def test_cancel_callback_is_optional(env, cancel_first):
     report = index_folder(shots, storage, config, FakeOcr({}), cancel=(lambda: True) if cancel_first else None)
     assert report.cancelled is cancel_first
     assert report.processed == (0 if cancel_first else 2)
+
+
+# ---- refreshing what is already indexed ---------------------------------------------
+
+def test_refresh_reprocesses_stale_results_without_adding_or_removing(env):
+    from indexer import refresh_folder
+
+    shots, config, storage = env
+    files = add_images(shots, 3)
+    index_folder(shots, storage, config, FakeOcr({"red": "red text"}, name="ocr-1"))
+    scanned = storage.list_folders()[0].last_scan_at
+    files[0].unlink()  # gone from disk: its record must stay
+    make_image(shots / "brand_new.png", color=(220, 30, 90))  # never indexed: must stay unindexed
+
+    newer = FakeOcr({"red": "red text"}, name="ocr-2")
+    report = refresh_folder(str(shots), storage, config, newer)
+
+    assert newer.calls == 2 and report.processed == 2  # only the two files still there, with the new model
+    names = sorted(r.name for r in storage.folder_images(str(shots)))
+    assert names == ["s0.png", "s1.png", "s2.png"]  # nothing added, nothing removed
+    assert {r.ocr_model for r in storage.folder_images(str(shots)) if r.name != "s0.png"} == {"ocr-2"}
+    assert storage.list_folders()[0].last_scan_at == scanned  # no scan is recorded
+
+    again = FakeOcr({"red": "red text"}, name="ocr-2")
+    assert refresh_folder(str(shots), storage, config, again).processed == 0 and again.calls == 0
+
+
+def test_refresh_job_and_snapshot(env):
+    shots, config, storage = env
+    add_images(shots, 2)
+    index_folder(shots, storage, config, FakeOcr({"red": "red text"}, name="ocr-1"))
+    jobs = IndexJobs(Models(FakeOcr({"red": "red text"}, name="ocr-2")))
+    job = jobs.submit(storage, config, folders=[str(shots)], refresh=True)
+    assert wait_until(lambda: not job.active)
+    assert job.state == "done" and job.processed == 2 and job.snapshot()["refresh"] is True
+    assert jobs.submit(storage, config, folders=[]).snapshot()["refresh"] is False

@@ -274,6 +274,11 @@ function renderSidebar() {
       h('div', { class: 'muted small', text: 'Index location' }), h('div', { class: 'code', text: lib.indexDir }),
       h('div', { class: 'muted small', text: 'Set SNAPRECALL_HOME to change where accounts and libraries are kept.' }),
       h('div', { class: 'muted small', text: `Text recognition: ${state(models.ocr)} · Visual search: ${state(models.visual)} · Meaning: ${state(models.textMeaning)}` }),
+      known.length ? h('button', { class: 'btn block', type: 'button', onclick: refreshAnalysis,
+        disabled: S.jobs.active.length > 0, text: 'Refresh analysis of indexed screenshots',
+        title: 'Re-checks the screenshots already in your library (new labels, changed files, updated models). It does not look for new screenshots.' }) : null,
+      lib.canClaimLegacy ? h('button', { class: 'btn block', type: 'button', onclick: claimLegacy,
+        text: 'Take over the library from before accounts…' }) : null,
       known.length ? h('button', { class: 'btn danger block', type: 'button', onclick: deleteAll, text: 'Delete all screenshots…' }) : null,
       lib.removedCount ? h('button', { class: 'btn block', type: 'button', onclick: restoreRemoved,
         text: `Restore ${lib.removedCount} deleted screenshots` }) : null,
@@ -325,6 +330,26 @@ async function reindex() {
   try {
     await api('/api/library/reindex', { method: 'POST', body: { folder: S.folder === ALL ? null : S.folder } });
     await refreshJobs();
+  } catch (err) { flash(err.message); }
+}
+
+async function refreshAnalysis() {
+  try {
+    await api('/api/library/refresh', { method: 'POST', body: { folder: S.folder === ALL ? null : S.folder } });
+    await refreshJobs();
+  } catch (err) { flash(err.message); }
+}
+
+async function claimLegacy() {
+  const values = await askDialog({ title: 'Take over the library from before accounts?',
+    text: 'The folders and search data SnapRecall built before accounts existed move into this account. Your screenshot files aren’t touched. Nothing else in this account is replaced: it only works while this account’s library is empty.',
+    confirm: 'Take over library' });
+  if (!values) return;
+  try {
+    await api('/api/library/claim-legacy', { method: 'POST' });
+    await refreshLibrary();
+    await route();
+    flash('Done. The earlier library is now part of this account.', 'ok');
   } catch (err) { flash(err.message); }
 }
 
@@ -388,7 +413,7 @@ function jobCard(job) {
   if (job.state === 'queued') title = 'Waiting for another indexing run to finish…';
   else if (job.state === 'waiting') { title = 'Getting text recognition and visual search ready…'; detail = 'This takes a few seconds after SnapRecall starts.'; }
   else {
-    title = `Indexing ${job.target ? folderLabel(job.target) : 'screenshots'}${many}`;
+    title = `${job.refresh ? 'Refreshing' : 'Indexing'} ${job.target ? folderLabel(job.target) : 'screenshots'}${many}`;
     detail = job.total ? `${job.done} of ${job.total} · ${job.current || 'finishing…'}` : 'Looking for new and changed screenshots…';
   }
   const bar = job.state === 'running' && job.total ? h('progress', { max: job.total, value: job.done, 'aria-label': 'Indexing progress' }) : null;
@@ -415,9 +440,10 @@ function finishedBanner(job) {
   const lines = problems.length ? h('ul', {}, problems.slice(0, 5).map((p) => h('li', { text: p })),
     problems.length > 5 ? h('li', { text: `and ${problems.length - 5} more` }) : null) : null;
   let kind, text;
-  if (job.state === 'cancelled') { kind = 'warn'; text = `Indexing stopped. ${plural(job.processed, 'screenshot was', 'screenshots were')} saved; run it again to continue where it left off.`; }
-  else if (job.state === 'failed') { kind = 'error'; text = 'Indexing stopped unexpectedly.'; }
-  else { kind = problems.length ? 'warn' : 'ok'; text = `Indexing complete — ${job.processed ? plural(job.processed, 'screenshot', 'screenshots') + ' added or updated' : 'everything was up to date'}${job.removed ? `, ${job.removed} removed` : ''}.`; }
+  const verb = job.refresh ? 'Refresh' : 'Indexing';
+  if (job.state === 'cancelled') { kind = 'warn'; text = `${verb} stopped. ${plural(job.processed, 'screenshot was', 'screenshots were')} saved; run it again to continue where it left off.`; }
+  else if (job.state === 'failed') { kind = 'error'; text = `${verb} stopped unexpectedly.`; }
+  else { kind = problems.length ? 'warn' : 'ok'; text = `${verb} complete — ${job.processed ? plural(job.processed, 'screenshot', 'screenshots') + (job.refresh ? ' updated' : ' added or updated') : 'everything was up to date'}${job.removed ? `, ${job.removed} removed` : ''}.`; }
   return h('div', { class: `banner ${kind}`, role: 'status' }, h('div', { class: 'grow' }, text, lines),
     h('button', { class: 'btn ghost', type: 'button', text: 'Dismiss', onclick: () => { S.dismissed.add(job.id); renderJobs(); } }));
 }
@@ -488,7 +514,9 @@ function renderResults() {
     return box.replaceChildren(emptyState('folder', 'Find any screenshot by describing it',
       'Add a folder of screenshots, or pick individual screenshots, to get started. They stay on this computer.' +
       (lib.guest ? ' As a guest, this library is deleted when you close this window.' : ''),
-      h('button', { class: 'btn primary', type: 'button', onclick: addScreenshots }, icon('plus', 16), 'Add screenshots…')));
+      h('div', {}, h('button', { class: 'btn primary', type: 'button', onclick: addScreenshots }, icon('plus', 16), 'Add screenshots…'),
+        lib.canClaimLegacy ? h('p', {}, h('button', { class: 'btn', type: 'button', onclick: claimLegacy,
+          text: 'Use the library already on this computer' })) : null)));
   }
   const chip = h('span', { class: 'chip', title: info ? info.path : 'All folders' }, icon(info && info.individual ? 'image' : 'folder', 14), folderLabel(S.folder));
   const status = [chip, info ? plural(info.count, 'screenshot', 'screenshots') : null,

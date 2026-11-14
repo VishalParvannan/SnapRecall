@@ -333,9 +333,30 @@ def index_files(paths: list[str | Path], storage: Storage, config: Config,
     return report
 
 
+def refresh_folder(folder: str, storage: Storage, config: Config, ocr: OcrEngine | None = None,
+                   embedder: Embedder | None = None, progress: ProgressFn | None = None,
+                   cancel: CancelFn | None = None) -> IndexReport:
+    """Re-check the screenshots already in a folder (or INDIVIDUAL), without looking for new ones.
+
+    Files that changed, failed before, or were analysed with older models or settings (for
+    example before labels or region embeddings existed) are processed again, reusing every
+    result that is still valid. Nothing is added or removed, and no scan is recorded: a folder
+    can hold many screenshots that were never indexed, and this leaves them alone."""
+    members = sorted(storage.member_paths(folder))
+    present = []
+    for key in members:
+        try:
+            if Path(key).is_file():
+                present.append(Path(key))
+        except OSError:
+            continue  # unreadable right now: keep its record as it is
+    plan = _plan_paths(present, [], storage, ocr, embedder, config.enable_regions)
+    return _index(folder, plan, storage, config, ocr, embedder, progress, cancel, record_scan=False)
+
+
 def _index(key: str, plan: ScanPlan, storage: Storage, config: Config, ocr: OcrEngine | None,
            embedder: Embedder | None, progress: ProgressFn | None,
-           cancel: CancelFn | None = None) -> IndexReport:
+           cancel: CancelFn | None = None, record_scan: bool = True) -> IndexReport:
     report = IndexReport(folder=key, plan=plan)
     storage.add_members(key, [str(p) for p in plan.unchanged])
 
@@ -366,7 +387,8 @@ def _index(key: str, plan: ScanPlan, storage: Storage, config: Config, ocr: OcrE
         for orphan in storage.remove_members(key, plan.missing):
             remove_thumbnail(config, orphan.thumbnail)
         report.removed = len(plan.missing)
-    storage.save_folder(key, complete=plan.complete)
+    if record_scan:
+        storage.save_folder(key, complete=plan.complete)
     return report
 
 

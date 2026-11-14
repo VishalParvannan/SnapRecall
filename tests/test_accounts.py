@@ -132,3 +132,47 @@ def test_accounts_db_schema(tmp_path):
     cols = {r[1] for r in conn.execute("PRAGMA table_info(users)")}
     conn.close()
     assert {"username", "salt", "pw_hash"} <= cols
+
+
+def test_existing_empty_account_can_take_over_the_legacy_library(tmp_path):
+    home, shots = tmp_path / "home", tmp_path / "shots"
+    make_image(shots / "a.png")
+    legacy = load_config(home)
+    index_folder(str(shots), Storage(legacy.db_path), legacy)
+    acc = LocalAccounts(home)
+    user = acc.create("sam", "correct horse")
+    own = load_config(acc.user_dir(user))
+    Storage(own.db_path)  # the account's own, still empty, library (with SQLite's side files)
+    (acc.user_dir(user) / "index.db-wal").write_bytes(b"stale")
+    assert acc.library_is_empty(user)
+
+    acc.claim_legacy_library(user)
+
+    assert not acc.has_legacy_library() and not acc.library_is_empty(user)
+    assert [r.name for r in Storage(own.db_path).all_images()] == ["a.png"]
+    assert not (acc.user_dir(user) / "index.db-wal").exists()
+
+
+def test_an_account_with_screenshots_is_never_replaced(tmp_path):
+    home, shots, mine = tmp_path / "home", tmp_path / "shots", tmp_path / "mine"
+    make_image(shots / "a.png")
+    make_image(mine / "own.png", color=(30, 60, 220))
+    legacy = load_config(home)
+    index_folder(str(shots), Storage(legacy.db_path), legacy)
+    acc = LocalAccounts(home)
+    user = acc.create("sam", "correct horse")
+    own = load_config(acc.user_dir(user))
+    index_folder(str(mine), Storage(own.db_path), own)
+
+    with pytest.raises(AccountError, match="already has"):
+        acc.claim_legacy_library(user)
+    assert acc.has_legacy_library()
+    assert [r.name for r in Storage(own.db_path).all_images()] == ["own.png"]
+
+
+def test_claiming_needs_a_legacy_library(tmp_path):
+    acc = LocalAccounts(tmp_path)
+    user = acc.create("sam", "correct horse")
+    assert acc.library_is_empty(user)
+    with pytest.raises(AccountError, match="no earlier library"):
+        acc.claim_legacy_library(user)

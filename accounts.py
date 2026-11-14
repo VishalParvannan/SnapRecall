@@ -128,10 +128,35 @@ class LocalAccounts:
     def has_legacy_library(self) -> bool:
         return (self.home / "index.db").exists()
 
+    def library_is_empty(self, user: User) -> bool:
+        """True when `user`'s library holds nothing yet (no screenshots, folders, or removals).
+        Anything unreadable counts as not empty, so it is never replaced."""
+        db = self.user_dir(user) / "index.db"
+        if not db.exists():
+            return True
+        try:
+            conn = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True)
+            try:
+                return all(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] == 0
+                           for table in ("images", "folders", "removed_images"))
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            return False
+
     def claim_legacy_library(self, user: User) -> None:
-        """Move the pre-accounts library (home/index.db, thumbnails, cloud sign-in) into `user`."""
+        """Move the pre-accounts library (home/index.db, thumbnails, cloud sign-in) into `user`.
+
+        An account that already has a library of its own can't take it over (that would replace
+        its data); a library that is still empty is replaced, including SQLite's side files."""
+        if not self.has_legacy_library():
+            raise AccountError("There is no earlier library on this computer to take over.")
+        if not self.library_is_empty(user):
+            raise AccountError("This account already has screenshots in its library.")
         dest = self.user_dir(user)
         dest.mkdir(parents=True, exist_ok=True)
+        for name in ("index.db", "index.db-wal", "index.db-shm"):
+            (dest / name).unlink(missing_ok=True)  # an empty library's files, not the screenshots
         for name in LEGACY_FILES:
             if (self.home / name).exists():
                 shutil.move(str(self.home / name), str(dest / name))

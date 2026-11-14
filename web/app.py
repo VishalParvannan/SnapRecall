@@ -408,6 +408,8 @@ def create_app(home: str | Path | None = None, models=None,
             "indexDir": str(lib.config.index_dir),
             "guest": lib.user["kind"] == "guest",
             "username": lib.user["username"],
+            "canClaimLegacy": lib.user["kind"] == "account" and state.accounts.has_legacy_library()
+            and state.accounts.library_is_empty(User(lib.user["id"], lib.user["username"])),
         }
 
     @app.post("/api/library/open")
@@ -440,6 +442,30 @@ def create_app(home: str | Path | None = None, models=None,
         if not targets or any(t not in known for t in targets):
             raise HTTPException(404, "That folder isn't in your library.")
         return state.jobs.submit(lib.storage, lib.config, targets).snapshot()
+
+    @app.post("/api/library/refresh", status_code=202)
+    def refresh(body: FolderRef, lib: Library = Depends(library)):
+        """Re-check the screenshots already indexed (labels, regions, changed files), without
+        looking for new ones."""
+        known = [f.path for f in lib.storage.list_folders()]
+        targets = known if body.folder in (None, "", ALL_FOLDERS) else [body.folder]
+        if not targets or any(t not in known for t in targets):
+            raise HTTPException(404, "That folder isn't in your library.")
+        return state.jobs.submit(lib.storage, lib.config, targets, refresh=True).snapshot()
+
+    @app.post("/api/library/claim-legacy")
+    def claim_legacy(lib: Library = Depends(library)):
+        """Take over the library from before accounts existed (an account with an empty library only)."""
+        if lib.user["kind"] != "account":
+            raise HTTPException(400, "Sign in with an account to take over the earlier library.")
+        if state.jobs.has_active(str(lib.config.index_dir)):
+            raise HTTPException(409, "Wait for indexing to finish first.")
+        try:
+            state.accounts.claim_legacy_library(User(lib.user["id"], lib.user["username"]))
+        except AccountError as exc:
+            raise HTTPException(400, str(exc)) from None
+        state.drop_library(lib.user["dir"])  # reopened from the moved files on the next request
+        return {"ok": True}
 
     @app.post("/api/library/forget")
     def forget(body: FolderRef, lib: Library = Depends(library)):

@@ -267,3 +267,62 @@ def test_one_visitor_cannot_use_anothers_jobs(tmp_path):
         assert client.get("/api/library").json()["folders"] == []
         assert client.post(f"/api/jobs/{job['id']}/cancel").status_code == 404
         assert client.get("/api/jobs").json() == {"active": [], "recent": []}
+
+
+# ---- refreshing and taking over the earlier library ------------------------------------
+
+def test_refresh_endpoint_rechecks_without_scanning_for_new_files(guest, tmp_path):
+    shots = library_folder(tmp_path)
+    guest.post("/api/library/index", json={"folders": [str(shots)], "files": []})
+    wait_for_jobs(guest)
+    make_image(shots / "late.png", color=(30, 220, 30))  # added after indexing
+    assert guest.post("/api/library/refresh", json={"folder": "/not/in/library"}).status_code == 404
+    started = guest.post("/api/library/refresh", json={"folder": str(shots)})
+    assert started.status_code == 202 and started.json()["refresh"] is True
+    recent = wait_for_jobs(guest)["recent"][0]
+    assert recent["refresh"] and recent["state"] == "done"
+    assert guest.get("/api/library").json()["folders"][0]["count"] == 3  # "late.png" is not picked up
+
+
+def test_account_takes_over_the_earlier_library(tmp_path):
+    from config import load_config
+    from indexer import index_folder
+    from storage import Storage
+
+    shots = library_folder(tmp_path)
+    legacy = load_config(tmp_path / "web" / "home")
+    index_folder(shots, Storage(legacy.db_path), legacy, FakeOcr({"red": "invoice total"}))
+    with make_client(tmp_path / "web") as client:
+        client.post("/api/session/guest")
+        assert client.get("/api/library").json()["canClaimLegacy"] is False  # guests can't
+        assert client.post("/api/library/claim-legacy").status_code == 400
+        client.post("/api/session/logout")
+
+        client.post("/api/session/register", json={"username": "sam", "password": "longenough", "confirm": "longenough"})
+        library = client.get("/api/library").json()
+        assert library["canClaimLegacy"] is True and library["folders"] == []
+        assert client.post("/api/library/claim-legacy").status_code == 200
+        library = client.get("/api/library").json()
+        assert library["canClaimLegacy"] is False and library["folders"][0]["count"] == 3
+        assert client.get("/api/search", params={"q": "invoice"}).json()["state"] == "results"
+        assert client.post("/api/library/claim-legacy").status_code == 400  # nothing left to take over
+
+
+def test_an_account_with_screenshots_cannot_take_over(tmp_path):
+    from config import load_config
+    from indexer import index_folder
+    from storage import Storage
+
+    shots = library_folder(tmp_path)
+    legacy = load_config(tmp_path / "web" / "home")
+    index_folder(shots, Storage(legacy.db_path), legacy, FakeOcr({}))
+    mine = tmp_path / "mine"
+    make_image(mine / "own.png", color=(30, 60, 220))
+    with make_client(tmp_path / "web") as client:
+        client.post("/api/session/register", json={"username": "ann", "password": "longenough", "confirm": "longenough"})
+        client.post("/api/library/index", json={"folders": [str(mine)], "files": []})
+        wait_for_jobs(client)
+        assert client.get("/api/library").json()["canClaimLegacy"] is False
+        refused = client.post("/api/library/claim-legacy")
+        assert refused.status_code == 400 and "already has" in refused.json()["error"]
+        assert [f["label"] for f in client.get("/api/library").json()["folders"]] == ["mine"]

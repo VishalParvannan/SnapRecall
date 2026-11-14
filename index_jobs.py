@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from config import Config
-from indexer import INDIVIDUAL, IndexReport, index_files, index_folder
+from indexer import INDIVIDUAL, IndexReport, index_files, index_folder, refresh_folder
 from storage import Storage
 
 KEEP_FINISHED = 20  # finished jobs remembered, for the "last run" summary
@@ -41,6 +41,7 @@ class Job:
     library: str  # which library it belongs to (its index folder)
     folders: list[str]
     files: list[str]
+    refresh: bool = False  # re-check what is already indexed instead of scanning for new screenshots
     state: str = "queued"  # queued | waiting | running | done | cancelled | failed
     target: str = ""  # folder (or INDIVIDUAL) being indexed now
     target_number: int = 0
@@ -62,7 +63,7 @@ class Job:
 
     def snapshot(self) -> dict:
         return {
-            "id": self.id, "state": self.state, "active": self.active,
+            "id": self.id, "state": self.state, "active": self.active, "refresh": self.refresh,
             "target": self.target, "targetNumber": self.target_number, "targetCount": self.target_count,
             "done": self.done, "total": self.total, "current": self.current,
             "processed": self.processed, "failed": [{"path": p, "message": m} for p, m in self.failed],
@@ -81,10 +82,12 @@ class IndexJobs:
 
     # ---- submitting and watching -------------------------------------------
     def submit(self, storage: Storage, config: Config, folders: list[str] | None = None,
-               files: list[str] | None = None) -> Job:
+               files: list[str] | None = None, refresh: bool = False) -> Job:
         """Queue indexing of `folders` (with subfolders) and/or individually chosen `files`.
-        Files are indexed as one extra target, after the folders."""
-        job = Job(secrets.token_hex(8), str(config.index_dir), list(folders or []), list(files or []))
+        Files are indexed as one extra target, after the folders. With `refresh`, the screenshots
+        already in `folders` are re-checked instead and nothing new is looked for (see
+        indexer.refresh_folder)."""
+        job = Job(secrets.token_hex(8), str(config.index_dir), list(folders or []), list(files or []), refresh)
         with self._lock:
             self._jobs.append(job)
             self._forget_old()
@@ -156,7 +159,10 @@ class IndexJobs:
 
             try:
                 args = (storage, config, self.models.ocr, self.models.embedder, progress, job.cancel.is_set)
-                report = (index_files(job.files, *args) if is_files else index_folder(target, *args))
+                if is_files:
+                    report = index_files(job.files, *args)
+                else:
+                    report = (refresh_folder if job.refresh else index_folder)(target, *args)
             except (OSError, ValueError) as exc:
                 job.problems.append(f"{target}: {exc}")
                 continue
