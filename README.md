@@ -10,6 +10,7 @@ Tested with Python 3.14 on Windows 11. Runs on CPU; a GPU is used automatically 
 python -m venv .venv
 .venv\Scripts\activate                 # macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt        # app + tests (small)
+pip install -r requirements-web.txt    # the web app (FastAPI + uvicorn); pywebview is optional there
 pip install torch --index-url https://download.pytorch.org/whl/cpu
 pip install -r requirements-models.txt # text recognition + visual search + matching text by meaning
 ```
@@ -33,8 +34,12 @@ Indexing speed depends heavily on the CPU. On the laptop used for testing (Intel
 ## Launch
 
 ```bash
-streamlit run app.py
+python snaprecall.py            # a desktop window if pywebview is installed, otherwise your browser
+python snaprecall.py --browser  # always your default browser
+python snaprecall.py --no-open  # only run the server, and print its address
 ```
+
+This is the web app: a small server that listens on `127.0.0.1` only ([web/app.py](web/app.py)) and an interface that needs no build step and loads nothing from the internet ([web/static](web/static)). `pip install pywebview` makes it open in its own window instead of a browser tab (that mode hasn't been tested; the browser has). The earlier Streamlit interface still works (`streamlit run app.py`) and is kept until the web app does everything it does; the web app doesn't have the cloud backup panel yet.
 
 The app opens on a sign-in screen (see [Signing in](#signing-in)). Then add screenshots in either of two ways:
 
@@ -47,14 +52,26 @@ This is SnapRecall's own window rather than the system file window, because the 
 
 The files are indexed where they are; nothing is copied or moved. Previously indexed folders and screenshots are remembered and reopen without re-indexing. To try it quickly, choose `samples/demo`.
 
-The app is meant to be run and used on the same computer: the folder chooser and **Open original** open on the computer running Streamlit. If the folder window doesn't appear, check behind the browser window.
+The app is meant to be run and used on the same computer: the folder chooser and **Open original** open on the computer running the app. If the folder window doesn't appear, check behind the app window. In the web app you can also choose **Or paste a folder path…**.
+
+### Background indexing
+
+In the web app, indexing runs on a background worker ([index_jobs.py](index_jobs.py)) instead of inside the page:
+
+- A panel above the results shows progress (*12 of 64 · name.png*) and a **Cancel** button. You can keep searching while it runs.
+- It keeps going if you close or reload the page, and the panel reappears when you come back.
+- One run happens at a time; others wait in line and can be cancelled before they start. A run waits for the models to finish loading first, because screenshots indexed without them would be stored with no text or visual data.
+- **Cancel** stops before the next screenshot. Everything already processed is kept, and the folder isn't recorded as fully scanned, so no missing-file clean-up happens; run it again (or **Re-index**) to continue where it left off.
+- When it ends, a summary says how many screenshots were added or updated and lists any that couldn't be read.
+
+The Streamlit interface still indexes inside the page, so closing its tab stops the run (progress so far is kept).
 
 ## Signing in
 
 The first screen offers three choices:
 
 - **Create account / Sign in:** a local account on this computer (username and password, no email). Each account has its own library — folders, recognized text, thumbnails, visual-search data — kept between sessions in `SNAPRECALL_HOME/users/<id>/`. Accounts can't see each other's libraries in the app.
-- **Continue as guest:** a temporary library in `SNAPRECALL_HOME/guests/`. Its data is deleted when the session ends: **End guest session** in the sidebar, about a minute after the tab is closed or refreshed (Streamlit has no exact "tab closed" event, so a short grace period lets a dropped connection reconnect), or when the app is stopped. If the app is killed without a chance to clean up, leftover guest data is deleted the next time it starts.
+- **Continue as guest:** a temporary library in `SNAPRECALL_HOME/guests/`. Its data is deleted when the session ends: **End guest session** in the sidebar, about a minute after the tab is closed or refreshed (Streamlit has no exact "tab closed" event, so a short grace period lets a dropped connection reconnect), or when the app is stopped. If the app is killed without a chance to clean up, leftover guest data is deleted the next time it starts. In the web app, a guest library is deleted once its window has been silent for about two minutes (an open page checks in every second); that clean-up runs the next time the app handles a request, when the app exits, or at the next start.
 - **Delete this account** (Settings) removes the account and its library after asking for the password.
 
 Only SnapRecall's own data is deleted — **your screenshot files are never deleted**, for guests or accounts. Passwords are stored as salted scrypt hashes in `SNAPRECALL_HOME/accounts.db`; a forgotten password can't be recovered. The library data itself is not encrypted, so anyone with access to your Windows user files can read it. Local accounts are separate from the optional cloud backup account below. If you used SnapRecall before accounts existed, the first account you create can take over that library.
@@ -133,7 +150,7 @@ Each stored result records which model produced it. Changing a model setting mak
 
 ## Privacy and storage
 
-- Screenshots and recognized text are processed locally. Without an account, the only network access is the one-time model download. With an account, screenshots are uploaded only from folders where you turned backup on (see [Accounts and backup](#accounts-and-backup-optional)). Streamlit's usage statistics are turned off in `.streamlit/config.toml`.
+- Screenshots and recognized text are processed locally. Without an account, the only network access is the one-time model download. With an account, screenshots are uploaded only from folders where you turned backup on (see [Accounts and backup](#accounts-and-backup-optional)). Streamlit's usage statistics are turned off in `.streamlit/config.toml`. The web app's server only answers requests addressed to `127.0.0.1`/`localhost`, requires a custom header on every request that changes something (so a web page on another site can't trigger actions), keeps its session cookie `SameSite=Strict`, serves its page with a Content-Security-Policy, only serves image files that are in the signed-in library, and blocks sign-in for a username after 5 wrong passwords in 5 minutes. These are protections for a local app, not the result of a security audit.
 - Originals are only read, never modified or deleted. The one exception is **Rename** in the detail view, which renames the file when you ask (its contents are unchanged).
 - Only folders and screenshots you choose are indexed.
 - Everything is kept in `SNAPRECALL_HOME` (default `~/.snaprecall`): `accounts.db` (usernames and password hashes), one folder per account under `users/` and per guest session under `guests/`, each with a SQLite index (`index.db`) and thumbnails, and `cache/label_prompts_*.npz`, the visual model's vectors for the label descriptions in [labels.py](labels.py) (no screenshot data). Delete that folder to remove all accounts and indexed data. "Remove folder from index" in Settings forgets one folder.
@@ -218,7 +235,9 @@ The synthetic set can't show how well SnapRecall works on real screenshots. To m
 3. Optionally write `apps.json`, `{"file.png": "Discord", ...}`, for screenshots whose source app you know (names as in `labels.py`).
 4. Run `python evaluate.py --folder samples/private`.
 
-The index is built in a temporary folder, so your own index is untouched. The report prints filenames and app names, never screenshot text.
+The index is built in a temporary folder, so your own index is untouched. The report prints filenames and app names, never screenshot text. Add `--index-dir DIR` to keep the index and run again with a different setting (for example `SNAPRECALL_TEXT_MEANING=0`) without indexing twice.
+
+One example, run on 17 unique real screenshots (document drawings, a game, a breadboard, Discord and a travel cartoon) with 23 labelled queries (20 with an answer, 3 without): combined top-1 went from 85% to 95% and top-5 from 90% to 100% when matching text by meaning was switched on (synonym queries 1/4 → 3/4 top-1); text-only was 50% and visual-only 85%, and all 3 no-match queries were flagged as weak. The queries were written by the same person who found the weak spot the meaning signal fixes, so treat this as indicative, not as an independent result.
 
 ## Tests
 
@@ -226,7 +245,7 @@ The index is built in a temporary folder, so your own index is untouched. The re
 pytest
 ```
 
-Tests use small deterministic fake models ([tests/fakes.py](tests/fakes.py)), so they need no downloads or GPU. They cover indexing, individually chosen screenshots (adding more, changes, deletions, unavailable drives, overlap with folders, choosing a removed screenshot again), the file picker, change detection, overlapping folders, unreadable folders, files vanishing mid-scan, interrupted runs, retries, keeping earlier results when reprocessing fails, EXIF orientation, content hashes, model and label changes, index upgrades, persistence, ordering, ranking, full-text matching (stems, accents, scripts without spaces), synonyms, label evidence rules (unknown by default, filenames ignored, ambiguous wording), Unicode text, empty input, copy image (full resolution, transparency, errors, originals untouched), local accounts (password hashing, wrong passwords, account deletion, moving a pre-accounts library, guest-library cleanup after the grace period and after the app exits), and cloud accounts (sign-in, isolation between accounts, upload checks, backup/download, deletion). The sync tests need `fastapi` and are skipped without it.
+Tests use small deterministic fake models ([tests/fakes.py](tests/fakes.py)), so they need no downloads or GPU. They cover indexing, individually chosen screenshots (adding more, changes, deletions, unavailable drives, overlap with folders, choosing a removed screenshot again), the file picker, change detection, overlapping folders, unreadable folders, files vanishing mid-scan, interrupted runs, retries, keeping earlier results when reprocessing fails, EXIF orientation, content hashes, model and label changes, index upgrades, persistence, ordering, ranking, full-text matching (stems, accents, scripts without spaces), synonyms, label evidence rules (unknown by default, filenames ignored, ambiguous wording), Unicode text, empty input, copy image (full resolution, transparency, errors, originals untouched), local accounts (password hashing, wrong passwords, account deletion, moving a pre-accounts library, guest-library cleanup after the grace period and after the app exits), cloud accounts (sign-in, isolation between accounts, upload checks, backup/download, deletion), background indexing jobs (progress, cancelling while running, waiting for models, queueing, keeping progress when stopped, never removing missing files after a cancelled scan), identical-copy grouping, matching text by meaning, and the web backend (local-only checks, the custom-header requirement, sign-in and throttling, guest clean-up, indexing, search, detail, rename and delete, folder management, cancelling, one visitor can't see or cancel another's jobs or read files outside the library). The sync and web tests need `fastapi` and are skipped without it.
 
 ## Project layout
 
@@ -241,8 +260,12 @@ Tests use small deterministic fake models ([tests/fakes.py](tests/fakes.py)), so
 | `text_index.py` | Full-text search (SQLite FTS5) and synonyms |
 | `search.py` | Text, visual, and combined ranking |
 | `accounts.py` | Local accounts and temporary guest libraries |
-| `app.py` | Streamlit interface (sign-in screen in `ui/login.py`) |
-| `folder_picker.py`, `picker_dialog.py` | The "Add screenshots" window (folders and files together) |
+| `snaprecall.py` | Starts the web app (desktop window with pywebview, otherwise your browser) |
+| `web/app.py` | The web backend: sign-in, library, background indexing, search, detail, copy image (FastAPI) |
+| `web/static/` | The web interface: `index.html`, `style.css`, `app.js` (no build step) |
+| `index_jobs.py` | Background indexing: queue, progress, cancel |
+| `app.py`, `ui/` | Streamlit interface (sign-in screen in `ui/login.py`), kept until the web app matches it |
+| `folder_picker.py`, `picker_dialog.py`, `windows_picker.py` | The "Add screenshots" window (folders and files together; Explorer-style on Windows, Tk elsewhere) |
 | `copy_image.py` | Copy image to the browser device's clipboard |
 | `sync.py` | Optional account client: backup and download |
 | `sync_server/server.py` | Self-hostable account and backup server (FastAPI) |
@@ -263,6 +286,7 @@ Tests use small deterministic fake models ([tests/fakes.py](tests/fakes.py)), so
 - Upgrading from an earlier index format rebuilds the index (screenshots are re-processed once). The upgrades that added region embeddings and labels keep the index; re-indexing adds them without re-running text recognition. EXIF orientation is applied to thumbnails then too, but text and embeddings of photos indexed sideways before this change are only redone if the file changes.
 - Region embeddings make indexing slower (about 3 s more per screenshot on a laptop CPU, versus about 9 s for text recognition) and add about 32 KB per screenshot to the index.
 - An individual screenshot that was deleted from the library and then restored (Settings) only comes back when you choose it again, because it no longer belongs to any folder.
-- Indexing runs inside the Streamlit request; closing the tab mid-index stops it (progress so far is kept).
-- Local accounts protect libraries from each other inside the app only. They are not a security boundary against someone using the same Windows account, and the sign-in is lost when the tab is refreshed (sign in again). There is no limit on wrong-password attempts yet.
-- Guest-data deletion after closing the tab has been tested with Streamlit's test runner, not yet by closing a real browser tab.
+- Local accounts protect libraries from each other inside the app only. They are not a security boundary against someone using the same Windows account. In the Streamlit interface the sign-in is lost when the tab is refreshed and there is no limit on wrong-password attempts; the web app keeps you signed in until you sign out or the app stops (sessions are kept in memory) and blocks a username for 5 minutes after 5 wrong passwords (also in memory, so a restart resets it).
+- Guest-data deletion after closing the window has been tested with unit tests (Streamlit's test runner and the web test client), not yet by closing a real window.
+- **The web app is new.** It has the sign-in, library, background indexing, search, detail, rename, delete and copy features, but not cloud backup. Copy image was tested through the API and with a scripted click in a test browser, which denies clipboard access, so a real paste from the web app has not been verified yet (the Streamlit button was verified in Microsoft Edge). Window mode (`pywebview`) hasn't been tested.
+- If a local account already exists, a library from before accounts (`SNAPRECALL_HOME/index.db`) can't be taken over from the interface (only the first account created can claim it); its data stays where it is, unused.

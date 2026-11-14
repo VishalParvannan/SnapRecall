@@ -1,0 +1,11 @@
+# Text files are stored with LF and checked out with LF on every system, so Windows checkouts
+# don't show "LF will be replaced by CRLF" warnings or produce whole-file line-ending diffs.
+* text=auto eol=lf
+
+# Never touch binary files.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.db binary
+*.npz binary
