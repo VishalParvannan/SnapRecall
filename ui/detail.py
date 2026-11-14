@@ -11,7 +11,7 @@ from PIL import Image, ImageOps
 from copy_image import CopyImageError, clipboard_png, copy_button_html
 from indexer import RenameError, remove_screenshots, rename_screenshot
 from labels import describe_confidence
-from search import similar
+from search import group_duplicates, identical_copies, same_image, similar
 from storage import ImageRecord
 from ui.components import empty_state, render_grid
 from ui.context import AppContext
@@ -78,6 +78,11 @@ def show_detail(ctx: AppContext, rec: ImageRecord, visible: list[ImageRecord]) -
         if rec.width:
             rows.append(("Size", f"{rec.width} × {rec.height} px · {rec.size / 1024:.0f} KB"))
         rows.append(("Modified", html.escape(fmt_time(rec.mtime_ns))))
+        twins = identical_copies(rec, visible)
+        if twins:
+            shown_paths = "<br>".join(html.escape(str(r.path)) for r in twins[:3])
+            more = f"<br>and {len(twins) - 3} more" if len(twins) > 3 else ""
+            rows.append(("Also saved at", shown_paths + more))
         guess = '<span class="sr-guess">Guess</span>'  # generated automatically, never shown as fact
         if rec.source_app:
             rows.append((f"From{guess}", html.escape(
@@ -103,7 +108,9 @@ def show_detail(ctx: AppContext, rec: ImageRecord, visible: list[ImageRecord]) -
                    if ctx.models_loading else
                    "Finding similar screenshots needs visual search, which isn't available right now.")
         return
-    matches = similar(rec, visible, embedder.name)
+    # An identical copy is not "similar", and copies of one screenshot are listed once.
+    candidates = [r for r in group_duplicates(visible)[0] if r.path == rec.path or not same_image(r, rec)]
+    matches = similar(rec, candidates, embedder.name)
     if matches:
         render_grid([m.record for m in matches], prefix="sim")
     elif rec.embed_model != embedder.name:

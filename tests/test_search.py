@@ -234,3 +234,41 @@ def test_clear_visual_winner_beats_a_one_word_text_hit():
     filler = [rec(f"filler_{i}.png", "", (200, 150 + i, 150)) for i in range(20)]
     results = search("red screen", [distractor, red, *filler], EMB).results
     assert results[0].record.name == "winner.png"
+
+
+# ---- identical copies --------------------------------------------------------
+
+from search import group_duplicates, identical_copies
+
+
+def hashed(name, sha, mtime=1):
+    r = rec(name)
+    r.sha256, r.mtime_ns = sha, mtime
+    return r
+
+
+def test_identical_copies_are_shown_once_with_the_oldest_standing_for_them():
+    newer, older = hashed("b/shot.png", "aa", mtime=20), hashed("a/shot.png", "aa", mtime=10)
+    other = hashed("c.png", "bb")
+    shown, copies = group_duplicates([newer, other, older])
+    assert [r.path for r in shown] == [older.path, other.path]  # order of first appearance
+    assert copies == {older.path: [newer]} and other.path not in copies
+
+
+def test_records_without_a_hash_are_never_grouped():
+    a, b = hashed("a.png", None), hashed("b.png", None)
+    shown, copies = group_duplicates([a, b])
+    assert shown == [a, b] and copies == {}
+
+
+def test_three_copies_and_no_duplicates():
+    trio = [hashed(f"{d}/s.png", "cc", mtime=i) for i, d in enumerate("xyz")]
+    shown, copies = group_duplicates(trio)
+    assert shown == [trio[0]] and copies[trio[0].path] == trio[1:]
+    assert group_duplicates([]) == ([], {})
+
+
+def test_identical_copies_excludes_itself_and_unhashed_records():
+    a, b, c = hashed("a.png", "aa"), hashed("b.png", "aa"), hashed("c.png", "zz")
+    assert identical_copies(a, [a, b, c]) == [b]
+    assert identical_copies(hashed("n.png", None), [hashed("m.png", None)]) == []

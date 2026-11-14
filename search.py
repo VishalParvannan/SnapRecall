@@ -244,6 +244,42 @@ def filter_by_date(records: list[ImageRecord], start: date | None = None,
     return [r for r in records if (start is None or day(r) >= start) and (end is None or day(r) <= end)]
 
 
+def same_image(a: ImageRecord, b: ImageRecord) -> bool:
+    """True when both files have exactly the same content (needs the content hash on both)."""
+    return bool(a.sha256) and a.sha256 == b.sha256
+
+
+def identical_copies(rec: ImageRecord, records: list[ImageRecord]) -> list[ImageRecord]:
+    """Other screenshots with exactly the same content as `rec` (the same file saved elsewhere)."""
+    return sorted((r for r in records if r.path != rec.path and same_image(r, rec)), key=lambda r: r.path)
+
+
+def group_duplicates(records: list[ImageRecord]) -> tuple[list[ImageRecord], dict[str, list[ImageRecord]]]:
+    """Show identical copies of a screenshot once.
+
+    Screenshots with the same content hash (the same file saved in two folders, say) form a group;
+    the oldest file stands for it. Returns (records to show, in the order of their first
+    appearance, and {shown path: the other copies}). Records without a hash are never grouped.
+    """
+    by_hash: dict[str, list[ImageRecord]] = {}
+    for rec in records:
+        if rec.sha256:
+            by_hash.setdefault(rec.sha256, []).append(rec)
+    shown: list[ImageRecord] = []
+    copies: dict[str, list[ImageRecord]] = {}
+    done: set[str] = set()
+    for rec in records:
+        if not rec.sha256:
+            shown.append(rec)
+        elif rec.sha256 not in done:
+            done.add(rec.sha256)
+            first, *others = sorted(by_hash[rec.sha256], key=lambda r: (r.mtime_ns, r.path))
+            shown.append(first)
+            if others:
+                copies[first.path] = others
+    return shown, copies
+
+
 BEST_MATCH = "Best match"
 SORT_OPTIONS = [BEST_MATCH, "Date modified (newest)", "Date modified (oldest)", "Name (A–Z)", "Name (Z–A)",
                 "Size (largest)", "Size (smallest)", "Type"]

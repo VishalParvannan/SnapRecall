@@ -33,7 +33,9 @@ def excerpt_html(text: str | None, terms: list[str]) -> str:
     return f'<div class="sr-excerpt">{body}</div>'
 
 
-def render_grid(items: list[ImageRecord], prefix: str = "", terms: list[str] | None = None) -> None:
+def render_grid(items: list[ImageRecord], prefix: str = "", terms: list[str] | None = None,
+                copies: dict[str, list[ImageRecord]] | None = None) -> None:
+    """`copies` maps a shown screenshot's path to its identical copies, which are noted on its card."""
     for start in range(0, len(items), COLS):
         cols = st.columns(COLS)
         for offset, (col, rec) in enumerate(zip(cols, items[start:start + COLS])):
@@ -47,5 +49,7 @@ def render_grid(items: list[ImageRecord], prefix: str = "", terms: list[str] | N
                     state.selected = rec.path
                     st.rerun()
                 # Date and excerpt share one block so Streamlit's element spacing can't overlap them.
-                st.markdown(f'<div class="sr-card-date">{fmt_time(rec.mtime_ns)}</div>'
+                extra = len((copies or {}).get(rec.path, ()))
+                copy_note = f" · +{extra} cop{'y' if extra == 1 else 'ies'}" if extra else ""
+                st.markdown(f'<div class="sr-card-date">{fmt_time(rec.mtime_ns)}{copy_note}</div>'
                             + excerpt_html(rec.ocr_text, terms or []), unsafe_allow_html=True)

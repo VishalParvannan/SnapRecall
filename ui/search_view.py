@@ -6,7 +6,7 @@ from datetime import date, timedelta
 
 import streamlit as st
 
-from search import BEST_MATCH, SORT_OPTIONS, filter_by_date, query_terms, search, sort_records
+from search import BEST_MATCH, SORT_OPTIONS, filter_by_date, group_duplicates, query_terms, search, sort_records
 from storage import ImageRecord
 from ui.components import empty_state, render_grid
 from ui.context import AppContext
@@ -58,7 +58,12 @@ def render_search(ctx: AppContext, visible: list[ImageRecord]) -> None:
                     "Choose a wider date range, or Any time to see everything.")
         st.stop()
 
+    everything = len(pool)
+    pool, copies = group_duplicates(pool)  # identical copies of one screenshot are shown once
     range_note = "" if when == "Any time" else f" · {when.rstrip('…').lower()}"
+    if everything > len(pool):
+        hidden = everything - len(pool)
+        range_note += f" · {hidden} duplicate{'s' if hidden != 1 else ''} hidden"
     if query.strip():
         response = search(query, pool, ctx.embedder, visual_threshold=ctx.config.visual_threshold,
                           text_model=ctx.text_model, meaning_threshold=ctx.config.meaning_threshold)
@@ -73,9 +78,9 @@ def render_search(ctx: AppContext, visible: list[ImageRecord]) -> None:
                     "you're looking for.", icon=":material/lightbulb:")
         st.markdown(f'<p class="sr-count"><b>{len(shown)}</b> result{"s" if len(shown) != 1 else ""} '
                     f"for “{html.escape(query.strip())}”{html.escape(range_note)}</p>", unsafe_allow_html=True)
-        render_grid(shown, terms=query_terms(query))
+        render_grid(shown, terms=query_terms(query), copies=copies)
     else:
         browse_order = "Date modified (newest)" if order == BEST_MATCH else order
         label = "Newest screenshots" if browse_order == "Date modified (newest)" else f"Sorted by {browse_order}"
         st.markdown(f'<p class="sr-count">{html.escape(label + range_note)}</p>', unsafe_allow_html=True)
-        render_grid(sort_records(pool, browse_order)[:60])
+        render_grid(sort_records(pool, browse_order)[:60], copies=copies)
