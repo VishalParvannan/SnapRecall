@@ -12,22 +12,22 @@ Only SnapRecall's own data is ever deleted here; original screenshot files are n
 """
 from __future__ import annotations
 
-import hashlib
-import hmac
 import os
 import re
-import secrets
 import shutil
 import sqlite3
 import sys
+import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterator
 
-SCRYPT = dict(n=2**14, r=8, p=1, dklen=32)
+import passwords
+
 MIN_PASSWORD = 8
+LOGIN_ATTEMPTS, LOGIN_WINDOW = 5, 300  # failed sign-ins allowed per username per window (seconds)
 USERNAME_RE = re.compile(r"^[A-Za-z0-9._@-]{3,64}$")
 # A guest library is deleted once its session has been inactive this long, so a brief network
 # drop (Streamlit reconnects to the same session) doesn't wipe it.
@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS users (
     username   TEXT NOT NULL UNIQUE COLLATE NOCASE,
     salt       BLOB NOT NULL,
     pw_hash    BLOB NOT NULL,
-    created_at REAL NOT NULL
+    created_at REAL NOT NULL,
+    kdf        TEXT             -- hash parameters (passwords.py); NULL = passwords.LEGACY_PARAMS
 );
 """
 
@@ -55,8 +56,36 @@ class User:
     username: str
 
 
-def _hash(password: str, salt: bytes) -> bytes:
-    return hashlib.scrypt(password.encode("utf-8"), salt=salt, **SCRYPT)
+class LoginThrottle:
+    """Counts failed sign-ins per username, in memory (a restart resets it).
+
+    After `attempts` failures within `window` seconds, sign-in for that name is refused until
+    the oldest failure is older than the window. Shared by the web app and the Streamlit UI.
+    """
+
+    def __init__(self, attempts: int = LOGIN_ATTEMPTS, window: float = LOGIN_WINDOW,
+                 clock: Callable[[], float] = time.monotonic):
+        self.attempts, self.window, self.clock = attempts, window, clock
+        self._failures: dict[str, list[float]] = {}
+        self._lock = threading.Lock()
+
+    def blocked(self, username: str) -> bool:
+        key, now = username.strip().casefold(), self.clock()
+        with self._lock:
+            recent = [t for t in self._failures.get(key, []) if now - t < self.window]
+            if recent:
+                self._failures[key] = recent
+            else:
+                self._failures.pop(key, None)
+            return len(recent) >= self.attempts
+
+    def failed(self, username: str) -> None:
+        with self._lock:
+            self._failures.setdefault(username.strip().casefold(), []).append(self.clock())
+
+    def succeeded(self, username: str) -> None:
+        with self._lock:
+            self._failures.pop(username.strip().casefold(), None)
 
 
 class LocalAccounts:
@@ -66,6 +95,9 @@ class LocalAccounts:
         self.db_path = self.home / "accounts.db"
         with self._connect() as conn:
             conn.executescript(SCHEMA)
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)")}
+            if "kdf" not in columns:  # accounts.db from before hash parameters were stored
+                conn.execute("ALTER TABLE users ADD COLUMN kdf TEXT")
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -94,12 +126,12 @@ class LocalAccounts:
             raise AccountError("Use 3–64 letters, numbers, or . _ @ - for the username.")
         if len(password) < MIN_PASSWORD:
             raise AccountError(f"Use a password of at least {MIN_PASSWORD} characters.")
-        salt = secrets.token_bytes(16)
+        salt, pw_hash, kdf = passwords.new_hash(password)
         try:
             with self._connect() as conn:
                 cur = conn.execute(
-                    "INSERT INTO users (username, salt, pw_hash, created_at) VALUES (?, ?, ?, ?)",
-                    (username, salt, _hash(password, salt), time.time()))
+                    "INSERT INTO users (username, salt, pw_hash, created_at, kdf) VALUES (?, ?, ?, ?, ?)",
+                    (username, salt, pw_hash, time.time(), kdf))
         except sqlite3.IntegrityError:
             raise AccountError("That username is already taken on this computer.") from None
         user = User(cur.lastrowid, username)
@@ -108,13 +140,22 @@ class LocalAccounts:
 
     def verify(self, username: str, password: str) -> User:
         with self._connect() as conn:
-            row = conn.execute("SELECT id, username, salt, pw_hash FROM users WHERE username = ?",
+            row = conn.execute("SELECT id, username, salt, pw_hash, kdf FROM users WHERE username = ?",
                                (username.strip(),)).fetchone()
-        # Hash even for unknown names so both failures take the same time.
-        salt = row["salt"] if row else b"\0" * 16
-        ok = hmac.compare_digest(_hash(password, salt), row["pw_hash"] if row else b"")
+        # passwords.check hashes even for unknown names, so both failures take about the same time.
+        try:
+            ok = passwords.check(password, row["salt"] if row else None, row["pw_hash"] if row else None,
+                                 row["kdf"] if row else None)
+        except passwords.UnknownHashFormat:
+            ok = False
         if not (row and ok):
             raise AccountError("Wrong username or password.")
+        if passwords.needs_rehash(row["kdf"]):
+            # Made with older (cheaper) parameters: replace it now that the password is known.
+            salt, pw_hash, kdf = passwords.new_hash(password)
+            with self._connect() as conn:
+                conn.execute("UPDATE users SET salt = ?, pw_hash = ?, kdf = ? WHERE id = ?",
+                             (salt, pw_hash, kdf, row["id"]))
         return User(row["id"], row["username"])
 
     def delete(self, user: User, password: str) -> None:

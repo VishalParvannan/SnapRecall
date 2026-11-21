@@ -33,7 +33,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from accounts import AccountError, GuestLibraries, LocalAccounts, User
+from accounts import AccountError, GuestLibraries, LocalAccounts, LoginThrottle, User
 from config import SUPPORTED_EXTENSIONS, Config, load_config, snaprecall_home
 from copy_image import CopyImageError, clipboard_png
 from folder_picker import FolderPickerError, pick_screenshots
@@ -49,7 +49,6 @@ STATIC = Path(__file__).parent / "static"
 ALL_FOLDERS = "__all__"
 COOKIE = "sr_session"
 GUEST_ACTIVE_SECONDS = 45  # a guest tab pings every ~15 s; silent for this long means it was closed
-LOGIN_ATTEMPTS, LOGIN_WINDOW = 5, 300  # failed sign-ins allowed per username per window (seconds)
 BROWSE_LIMIT = 60
 ALLOWED_HOSTS = {"127.0.0.1", "localhost", "[::1]", "::1"}
 CSP = ("default-src 'self'; img-src 'self' blob: data:; style-src 'self'; script-src 'self'; "
@@ -110,7 +109,7 @@ class AppState:
         self.picker = picker
         self.sessions: dict[str, Session] = {}
         self.libraries: dict[str, tuple[Config, Storage]] = {}
-        self.failures: dict[str, list[float]] = {}
+        self.throttle = LoginThrottle()  # failed sign-ins per username (accounts.LOGIN_ATTEMPTS)
         self.lock = threading.Lock()
         self._last_sweep = 0.0
 
@@ -161,14 +160,8 @@ class AppState:
 
     # ---- sign-in throttling ----------------------------------------------------
     def check_attempts(self, name: str) -> None:
-        now = time.monotonic()
-        recent = [t for t in self.failures.get(name.lower(), []) if now - t < LOGIN_WINDOW]
-        self.failures[name.lower()] = recent
-        if len(recent) >= LOGIN_ATTEMPTS:
+        if self.throttle.blocked(name):
             raise HTTPException(429, "Too many failed attempts. Wait a few minutes and try again.")
-
-    def failed_attempt(self, name: str) -> None:
-        self.failures.setdefault(name.lower(), []).append(time.monotonic())
 
 
 class Library:
@@ -341,9 +334,9 @@ def create_app(home: str | Path | None = None, models=None,
         try:
             found = state.accounts.verify(body.username, body.password)
         except AccountError as exc:
-            state.failed_attempt(body.username)
+            state.throttle.failed(body.username)
             raise HTTPException(401, str(exc)) from None
-        state.failures.pop(body.username.lower(), None)
+        state.throttle.succeeded(body.username)
         enter(response, {"kind": "account", "id": found.id, "username": found.username,
                          "dir": str(state.accounts.user_dir(found))})
         return {"ok": True}

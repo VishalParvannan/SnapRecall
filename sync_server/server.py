@@ -18,7 +18,6 @@ Security notes (also in the README):
 from __future__ import annotations
 
 import hashlib
-import hmac
 import io
 import os
 import re
@@ -35,11 +34,12 @@ from fastapi.responses import FileResponse
 from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel
 
+import passwords  # shared with the app; run the server from the repository root
+
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 TOKEN_SECONDS = 30 * 24 * 3600
 LOGIN_WINDOW_SECONDS = 15 * 60
 LOGIN_MAX_FAILURES = 5
-SCRYPT = dict(n=2**14, r=8, p=1, dklen=32)
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 
@@ -49,7 +49,8 @@ CREATE TABLE IF NOT EXISTS users (
     email          TEXT NOT NULL UNIQUE COLLATE NOCASE,
     password_hash  BLOB NOT NULL,
     salt           BLOB NOT NULL,
-    created_at     REAL NOT NULL
+    created_at     REAL NOT NULL,
+    kdf            TEXT            -- hash parameters (passwords.py); NULL = passwords.LEGACY_PARAMS
 );
 CREATE TABLE IF NOT EXISTS tokens (
     token_hash  TEXT PRIMARY KEY,
@@ -71,10 +72,6 @@ CREATE TABLE IF NOT EXISTS files (
 class Credentials(BaseModel):
     email: str
     password: str
-
-
-def _hash_password(password: str, salt: bytes) -> bytes:
-    return hashlib.scrypt(password.encode("utf-8"), salt=salt, **SCRYPT)
 
 
 def _token_hash(token: str) -> str:
@@ -108,6 +105,8 @@ def create_app(data_dir: str | Path) -> FastAPI:
     with db() as conn:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.executescript(SCHEMA)
+        if "kdf" not in {row["name"] for row in conn.execute("PRAGMA table_info(users)")}:
+            conn.execute("ALTER TABLE users ADD COLUMN kdf TEXT")  # database from before kdf was stored
 
     def user_dir(user_id: int) -> Path:
         return files_dir / str(int(user_id))
@@ -142,12 +141,12 @@ def create_app(data_dir: str | Path) -> FastAPI:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Enter a valid email address.")
         if not 8 <= len(creds.password) <= 1024:
             raise HTTPException(status.HTTP_400_BAD_REQUEST, "Use a password of at least 8 characters.")
-        salt = secrets.token_bytes(16)
+        salt, password_hash, kdf = passwords.new_hash(creds.password)
         try:
             with db() as conn:
                 conn.execute(
-                    "INSERT INTO users (email, password_hash, salt, created_at) VALUES (?, ?, ?, ?)",
-                    (email, _hash_password(creds.password, salt), salt, time.time()),
+                    "INSERT INTO users (email, password_hash, salt, created_at, kdf) VALUES (?, ?, ?, ?, ?)",
+                    (email, password_hash, salt, time.time(), kdf),
                 )
         except sqlite3.IntegrityError:
             raise HTTPException(status.HTTP_409_CONFLICT, "An account with this email already exists.") from None
@@ -163,14 +162,23 @@ def create_app(data_dir: str | Path) -> FastAPI:
             raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS,
                                 "Too many failed sign-in attempts. Try again in 15 minutes.")
         with db() as conn:
-            user = conn.execute("SELECT id, email, password_hash, salt FROM users WHERE email = ?",
+            user = conn.execute("SELECT id, email, password_hash, salt, kdf FROM users WHERE email = ?",
                                 (email,)).fetchone()
-        if user is None or not hmac.compare_digest(
-            _hash_password(creds.password, user["salt"]), user["password_hash"]
-        ):
+        # passwords.check hashes even for unknown emails, so the response time doesn't reveal accounts.
+        try:
+            ok = passwords.check(creds.password, user["salt"] if user else None,
+                                 user["password_hash"] if user else None, user["kdf"] if user else None)
+        except passwords.UnknownHashFormat:
+            ok = False
+        if user is None or not ok:
             failures[key] = recent + [now]
             raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Email or password is incorrect.")
         failures.pop(key, None)
+        if passwords.needs_rehash(user["kdf"]):  # older, cheaper parameters: upgrade now
+            salt, password_hash, kdf = passwords.new_hash(creds.password)
+            with db() as conn:
+                conn.execute("UPDATE users SET password_hash = ?, salt = ?, kdf = ? WHERE id = ?",
+                             (password_hash, salt, kdf, user["id"]))
         token = secrets.token_urlsafe(32)
         with db() as conn:
             conn.execute("DELETE FROM tokens WHERE expires_at < ?", (now,))

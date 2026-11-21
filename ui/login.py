@@ -8,7 +8,7 @@ import streamlit as st
 from streamlit import runtime
 from streamlit.runtime.scriptrunner import get_script_run_ctx
 
-from accounts import MIN_PASSWORD, AccountError, GuestLibraries, LocalAccounts
+from accounts import MIN_PASSWORD, AccountError, GuestLibraries, LocalAccounts, LoginThrottle
 from config import snaprecall_home
 from ui.styles import icon_svg
 
@@ -49,6 +49,12 @@ def get_home() -> tuple[LocalAccounts, GuestLibraries]:
     accounts.cache_dir.mkdir(exist_ok=True)
     atexit.register(guests.delete_all_mine)
     return accounts, guests
+
+
+@st.cache_resource
+def get_throttle() -> LoginThrottle:
+    """Failed sign-ins per username, shared by every browser tab of this app process."""
+    return LoginThrottle()
 
 
 def _session_id() -> str:
@@ -138,11 +144,17 @@ def require_login() -> None:
             name = st.text_input("Username", key="login_name")
             password = st.text_input("Password", type="password", key="login_password")
             if st.form_submit_button("Sign in", type="primary", width="stretch"):
+                throttle = get_throttle()
+                if throttle.blocked(name):
+                    state.login_error = "Too many failed attempts. Wait a few minutes and try again."
+                    st.rerun()
                 try:
                     found = accounts.verify(name, password)
                 except AccountError as exc:
+                    throttle.failed(name)
                     state.login_error = str(exc)
                     st.rerun()
+                throttle.succeeded(name)
                 _enter({"kind": "account", "id": found.id, "username": found.username,
                         "dir": str(accounts.user_dir(found))})
         with tab_new, st.form("local_sign_up", border=False):

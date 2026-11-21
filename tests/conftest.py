@@ -4,8 +4,17 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
+import passwords
 from config import load_config
 from storage import Storage
+
+PRODUCTION_SCRYPT_N = passwords.SCRYPT_N  # recorded before the fixture below lowers it
+
+
+@pytest.fixture(autouse=True)
+def cheap_password_hashing(monkeypatch):
+    """Real scrypt cost takes about a second per hash; tests that need it use it explicitly."""
+    monkeypatch.setattr(passwords, "SCRYPT_N", 2**10)
 
 
 @pytest.fixture

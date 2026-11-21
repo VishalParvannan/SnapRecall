@@ -204,3 +204,19 @@ def test_backup_setting_persists(env):
     index_folder(shots, storage, config)
     storage.set_backup(str(shots), True)
     assert storage.list_folders()[0].backup is True
+
+
+def test_legacy_password_hash_is_upgraded_at_sign_in(api, tmp_path):
+    import sqlite3
+
+    import passwords
+    client_for(api)
+    db = tmp_path / "server" / "server.db"
+    salt = b"legacy-salt-0001"
+    with sqlite3.connect(db) as conn:  # as written before hash parameters were stored
+        conn.execute("UPDATE users SET salt = ?, password_hash = ?, kdf = NULL",
+                     (salt, passwords.hash_password(PASSWORD, salt, passwords.LEGACY_PARAMS)))
+    SyncClient("http://localhost:8765", http=api).login("ana@example.com", PASSWORD)
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("SELECT kdf FROM users").fetchone()[0] == passwords.current_params()
+    SyncClient("http://localhost:8765", http=api).login("ana@example.com", PASSWORD)
